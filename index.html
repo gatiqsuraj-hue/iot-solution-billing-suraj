@@ -202,6 +202,8 @@ aside button[hidden]{display:none}
 .ivt .s{font-size:12px;font-weight:600;color:#15803d}
 .ivt.low .s{color:#b45309}
 .ivt.out .s{color:#b42318}
+.ivt.click{cursor:pointer}
+.ivt.click:hover,.ivt.click:focus-visible{box-shadow:0 2px 8px rgba(22,32,46,.2)}
 .qneg{color:var(--danger);font-weight:700}
 </style>
 </head>
@@ -270,8 +272,8 @@ const today = () => { const d = new Date(); return d.getFullYear() + '-' + Strin
 
 const INV_DEFAULT = ['EV02', 'AIS140', 'SIM Card', 'Basic tracker 4G', 'GT06'];
 const LOW_STOCK = 5;
-function defInv() { return {items: INV_DEFAULT.map((n, i) => ({id: 'seed' + i, name: n, qty: 0})), log: []}; }
-function fixInv(x) { if (!x || !Array.isArray(x.items)) return defInv(); if (!Array.isArray(x.log)) x.log = []; return x; }
+function defInv() { return {items: INV_DEFAULT.map((n, i) => ({id: 'seed' + i, name: n, qty: 0, imeis: []})), log: []}; }
+function fixInv(x) { if (!x || !Array.isArray(x.items)) return defInv(); if (!Array.isArray(x.log)) x.log = []; x.items.forEach(i => { if (!Array.isArray(i.imeis)) i.imeis = []; }); return x; }
 function defaults() {
   return {
     settings: {prefix: 'INV-', nextNo: 1, note: 'Thank you for your business.'},
@@ -308,7 +310,7 @@ function save() {
 let toastTimer;
 function toast(msg) {
   const t = $('#toast'); t.textContent = msg; t.classList.add('show');
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), Math.max(2200, msg.length * 45));
 }
 
 /* ---------- calculation ---------- */
@@ -342,11 +344,11 @@ function go(t) {
   $('#brand').textContent = defBiz().name || 'Billing';
   window.scrollTo(0, 0);
 }
-document.querySelectorAll('aside button[data-tab]').forEach(b => b.onclick = () => go(b.dataset.tab));
+document.querySelectorAll('aside button[data-tab]').forEach(b => b.onclick = () => { invView = ''; go(b.dataset.tab); });
 
 /* ---------- new invoice ---------- */
 let draft = newDraft();
-function newDraft() { return {bizId: db.defaultBiz, customerId: '', date: today(), discount: 0, note: '', items: [{pid: '', inv: '', name: '', qty: 1, price: 0, tax: 0}]}; }
+function newDraft() { return {bizId: db.defaultBiz, customerId: '', date: today(), discount: 0, note: '', items: [{pid: '', inv: '', imeis: '', name: '', qty: 1, price: 0, tax: 0}]}; }
 
 function renderNew() {
   const d = draft;
@@ -358,10 +360,11 @@ function renderNew() {
           ${db.products.map(p => `<option value="${p.id}" ${p.id === it.pid ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}
         </select>
         <input placeholder="Item name" value="${esc(it.name)}" oninput="setItem(${i}, 'name', this.value)" aria-label="Item name">
-        <select style="margin-top:4px" onchange="setItem(${i}, 'inv', this.value)" aria-label="Stock item (inventory)">
+        <select style="margin-top:4px" onchange="setItem(${i}, 'inv', this.value); renderNew()" aria-label="Stock item (inventory)">
           <option value="">No stock item (inventory not changed)</option>
           ${db.inventory.items.map(x => `<option value="${x.id}" ${x.id === it.inv ? 'selected' : ''}>${esc(x.name)} (stock ${x.qty})</option>`).join('')}
         </select>
+        ${it.inv ? `<textarea rows="2" style="margin-top:4px" placeholder="IMEI numbers sold (one per line or comma separated)" oninput="setItem(${i}, 'imeis', this.value)" aria-label="IMEI numbers">${esc(it.imeis || '')}</textarea><div class="small" style="color:var(--muted)">IMEI available in stock: ${imeiAvail(invItem(it.inv) || {imeis: []})}</div>` : ''}
       </td>
       <td><input class="num" type="number" min="0" step="any" value="${esc(it.qty)}" oninput="setItem(${i}, 'qty', this.value)" aria-label="Quantity"></td>
       <td><input class="num" type="number" min="0" step="any" value="${esc(it.price)}" oninput="setItem(${i}, 'price', this.value)" aria-label="Price"></td>
@@ -421,15 +424,17 @@ function pickProduct(i, pid) {
   if (p) { it.name = p.name; it.price = p.price; it.tax = p.tax; const m = db.inventory.items.find(x => x.name.toLowerCase() === p.name.toLowerCase()); if (m) it.inv = m.id; }
   renderNew();
 }
-function addRow() { draft.items.push({pid: '', inv: '', name: '', qty: 1, price: 0, tax: 0}); renderNew(); }
+function addRow() { draft.items.push({pid: '', inv: '', imeis: '', name: '', qty: 1, price: 0, tax: 0}); renderNew(); }
 function delRow(i) {
   draft.items.splice(i, 1);
-  if (!draft.items.length) draft.items.push({pid: '', inv: '', name: '', qty: 1, price: 0, tax: 0});
+  if (!draft.items.length) draft.items.push({pid: '', inv: '', imeis: '', name: '', qty: 1, price: 0, tax: 0});
   renderNew();
 }
 function saveInvoice() {
-  const items = draft.items.filter(it => it.name.trim() && +it.qty > 0).map(it => ({name: it.name.trim(), qty: +it.qty, price: +it.price || 0, tax: +it.tax || 0, inv: it.inv || ''}));
+  const items = draft.items.filter(it => it.name.trim() && +it.qty > 0).map(it => ({name: it.name.trim(), qty: +it.qty, price: +it.price || 0, tax: +it.tax || 0, inv: it.inv || '', imeis: it.inv ? parseImeis(it.imeis || '') : []}));
   if (!items.length) { toast('Add at least one item with a name and quantity.'); return; }
+  const ierr = checkBillImeis(items);
+  if (ierr) { toast(ierr); return; }
   const need = {};
   items.forEach(it => { if (it.inv) need[it.inv] = (need[it.inv] || 0) + it.qty; });
   const lack = Object.keys(need).map(id => ({it: invItem(id), n: need[id]})).filter(x => x.it && x.n > x.it.qty);
@@ -444,6 +449,7 @@ function saveInvoice() {
   inv.totals = calc(items, inv.discount);
   s.nextNo++;
   stockOut(items, inv.no, inv.date);
+  markImeis(items, inv.no, inv.id, inv.date);
   db.invoices.unshift(inv);
   save();
   draft = newDraft();
@@ -455,7 +461,7 @@ function saveInvoice() {
 /* ---------- invoice viewer ---------- */
 function invoiceHTML(inv) {
   const s = inv.biz || bizSnap(), c = inv.customer || {};
-  const rows = inv.items.map((it, i) => `<tr><td>${i + 1}</td><td>${esc(it.name)}</td><td class="num">${it.qty}</td><td class="num">${money(it.price)}</td><td class="num">${it.tax}%</td><td class="num">${money(lineAmt(it))}</td></tr>`).join('');
+  const rows = inv.items.map((it, i) => `<tr><td>${i + 1}</td><td>${esc(it.name)}${(it.imeis || []).length ? `<div class="small" style="color:#555;word-break:break-all">IMEI: ${it.imeis.map(v => esc(v)).join(', ')}</div>` : ''}</td><td class="num">${it.qty}</td><td class="num">${money(it.price)}</td><td class="num">${it.tax}%</td><td class="num">${money(lineAmt(it))}</td></tr>`).join('');
   const t = inv.totals, st = statusOf(inv), stc = st === 'Paid' ? '' : (st === 'Due' ? 'due' : 'part');
   return `
     <div class="inv-hd">
@@ -529,7 +535,7 @@ let invQuery = '';
 function renderInvoices() {
   $('#main').innerHTML = `
     <div class="bar"><h2 style="margin:0">Invoices</h2>
-      <input id="q" style="max-width:240px" placeholder="Search number or customer" value="${esc(invQuery)}" oninput="invQuery = this.value; drawInvoiceRows()"></div>
+      <input id="q" style="max-width:240px" placeholder="Search bill no., customer or IMEI" value="${esc(invQuery)}" oninput="invQuery = this.value; drawInvoiceRows()"></div>
     <div class="card"><div class="scroll"><table>
       <thead><tr><th>No.</th><th>Date</th><th>Customer</th><th class="num">Total</th><th class="num">Due</th><th>Payment</th><th></th></tr></thead>
       <tbody id="inv-rows"></tbody></table></div>
@@ -538,7 +544,7 @@ function renderInvoices() {
 }
 function drawInvoiceRows() {
   const q = invQuery.toLowerCase();
-  const list = db.invoices.filter(i => !i.orig && (!q || i.no.toLowerCase().includes(q) || (i.customer.name || '').toLowerCase().includes(q)));
+  const list = db.invoices.filter(i => !i.orig && (!q || i.no.toLowerCase().includes(q) || (i.customer.name || '').toLowerCase().includes(q) || (i.items || []).some(it => (it.imeis || []).some(m => String(m).toLowerCase().includes(q)))));
   $('#inv-rows').innerHTML = list.length ? list.map(i => invRow(i, can('delete') ? 'delInvoice' : '')).join('')
     : `<tr><td colspan="7" class="empty">No invoices yet. Create one from New invoice.</td></tr>`;
   const sum = list.reduce((a, i) => a + i.totals.total, 0), due = list.reduce((a, i) => a + dueOf(i), 0);
@@ -752,21 +758,27 @@ function stockOut(items, ref, date) {
 }
 function stockBack(inv) {
   (inv.items || []).forEach(x => { const it = x.inv && invItem(x.inv); if (!it) return; it.qty = r3(it.qty + x.qty); invLog(it, 'in', x.qty, inv.no, 'Bill deleted'); });
+  db.inventory.items.forEach(it => {
+    it.imeis = it.imeis.filter(m => !(m.billId === inv.id && m.auto));
+    it.imeis.forEach(m => { if (m.billId === inv.id) { m.bill = ''; m.billId = ''; m.sold = ''; } });
+  });
 }
 function invStatus() {
-  const it = db.inventory.items;
+  const it = db.inventory.items, click = can('inv');
   if (!it.length) return '<div class="empty">No items yet. Create items in Inventory.</div>';
   return '<div class="ivg">' + it.map(x => {
     const c = x.qty <= 0 ? 'out' : (x.qty <= LOW_STOCK ? 'low' : ''), t = x.qty <= 0 ? 'Out of stock' : (x.qty <= LOW_STOCK ? 'Low stock' : 'In stock');
-    return `<div class="ivt ${c}"><div class="nm" title="${esc(x.name)}">${esc(x.name)}</div><div class="q">${x.qty}</div><div class="s">${t}</div></div>`;
-  }).join('') + '</div>';
+    return `<div class="ivt ${c} ${click ? 'click' : ''}" ${click ? `role="button" tabindex="0" onclick="openImei('${x.id}')" onkeydown="if (event.key === 'Enter') openImei('${x.id}')" title="Click to see IMEI numbers"` : ''}><div class="nm" title="${esc(x.name)}">${esc(x.name)}</div><div class="q">${x.qty}</div><div class="s">${t}${x.imeis.length ? ' · ' + imeiAvail(x) + ' IMEI' : ''}</div></div>`;
+  }).join('') + '</div>' + (click ? '<div class="small" style="color:var(--muted);margin-top:8px">Click an item to see its IMEI numbers.</div>' : '');
 }
 const TYPE_LBL = {in: 'Stock in', out: 'Stock out', set: 'Set to'};
-function renderInventory() {
+function renderInventory() { if (invView && invItem(invView)) return renderImeiPage(invView); invView = ''; renderInventoryMain(); }
+function renderInventoryMain() {
   const items = db.inventory.items, log = db.inventory.log.slice(0, 50);
   const opts = items.map(x => `<option value="${x.id}">${esc(x.name)} (stock ${x.qty})</option>`).join('');
   $('#main').innerHTML = `<h2>Inventory</h2>
     <div class="card"><h3>Stock now</h3>${invStatus()}</div>
+    <div class="card"><h3>Find IMEI</h3><input id="ivq2" placeholder="Type IMEI number (or last digits)" oninput="findImei(this.value)"><div id="ivfind" style="margin-top:10px"></div></div>
     <div class="card"><h3>Create item</h3>
       <div class="grid">
         <div><label for="ivn">Item name</label><input id="ivn" placeholder="e.g. GT06" onkeydown="if (event.key === 'Enter') addInvItem()"></div>
@@ -783,7 +795,7 @@ function renderInventory() {
       </div>
       <div style="margin-top:12px"><button class="btn" onclick="saveStock()">Save entry</button></div>` : '<div class="empty">Create an item first.</div>'}</div>
     <div class="card"><h3>Upload Excel</h3>
-      <p style="margin-top:0;color:var(--muted)">Upload an Excel (.xlsx, .xls) or CSV file with two columns: <b>Item</b> and <b>Qty</b>. Items that do not exist yet are created automatically.</p>
+      <p style="margin-top:0;color:var(--muted)">Upload an Excel (.xlsx, .xls) or CSV file with the columns <b>Item</b>, <b>IMEI</b> and <b>Qty</b>. Put one IMEI on each row; every new IMEI counts as 1 in stock, so Qty can stay empty. Rows without an IMEI (for example SIM Card) use the Qty column. Items that do not exist yet are created automatically. Format the IMEI column as Text in Excel.</p>
       <div class="grid">
         <div><label for="ivf">Excel / CSV file</label><input id="ivf" type="file" accept=".xlsx,.xls,.csv,.txt" onchange="importStock(this.files[0]); this.value = ''"></div>
         <div><label for="ivm">What to do with the quantities</label><select id="ivm"><option value="add">Add to current stock</option><option value="set">Replace current stock</option></select></div>
@@ -791,12 +803,13 @@ function renderInventory() {
       <div class="row-actions" style="margin-top:12px">
         <button class="ghost" onclick="downloadTemplate()">Download Excel template</button>
         <button class="ghost" onclick="exportStock()">Download current stock</button>
+        <button class="ghost" onclick="exportImei()">Download IMEI list</button>
       </div></div>
     <div class="card"><h3>Items</h3><div class="scroll"><table>
-      <thead><tr><th>Item</th><th class="num">Stock</th><th></th></tr></thead>
-      <tbody>${items.length ? items.map(x => `<tr><td>${esc(x.name)}</td><td class="num ${x.qty < 0 ? 'qneg' : ''}">${x.qty}</td>
-        <td><div class="row-actions"><button class="ghost" onclick="renameInvItem('${x.id}')">Rename</button>${can('delete') ? `<button class="ghost danger" onclick="delInvItem('${x.id}')">Delete</button>` : ''}</div></td></tr>`).join('')
-        : '<tr><td colspan="3" class="empty">No items yet.</td></tr>'}</tbody></table></div></div>
+      <thead><tr><th>Item</th><th class="num">Stock</th><th class="num">IMEI (available / total)</th><th></th></tr></thead>
+      <tbody>${items.length ? items.map(x => `<tr><td>${esc(x.name)}</td><td class="num ${x.qty < 0 ? 'qneg' : ''}">${x.qty}</td><td class="num">${imeiAvail(x)} / ${x.imeis.length}</td>
+        <td><div class="row-actions"><button class="ghost" onclick="openImei('${x.id}')">IMEI</button><button class="ghost" onclick="renameInvItem('${x.id}')">Rename</button>${can('delete') ? `<button class="ghost danger" onclick="delInvItem('${x.id}')">Delete</button>` : ''}</div></td></tr>`).join('')
+        : '<tr><td colspan="4" class="empty">No items yet.</td></tr>'}</tbody></table></div></div>
     <div class="card"><h3>Stock history (last 50)</h3><div class="scroll"><table>
       <thead><tr><th>Date</th><th>Item</th><th>Type</th><th class="num">Qty</th><th class="num">Balance</th><th>Bill / Note</th></tr></thead>
       <tbody>${log.length ? log.map(l => `<tr><td>${esc(l.date)}</td><td>${esc(l.name)}</td><td>${TYPE_LBL[l.type] || ''}</td><td class="num">${l.qty}</td><td class="num">${l.bal}</td><td>${esc([l.ref, l.note].filter(Boolean).join(' · '))}</td></tr>`).join('')
@@ -806,7 +819,7 @@ function addInvItem() {
   const name = $('#ivn').value.trim(), q = Math.max(0, +$('#ivq').value || 0);
   if (!name) { toast('Enter the item name.'); return; }
   if (db.inventory.items.some(x => x.name.toLowerCase() === name.toLowerCase())) { toast('This item already exists.'); return; }
-  const it = {id: uid(), name, qty: q};
+  const it = {id: uid(), name, qty: q, imeis: []};
   db.inventory.items.push(it);
   if (q > 0) invLog(it, 'in', q, '', 'Opening stock');
   save(); toast('Item created'); renderInventory();
@@ -872,7 +885,7 @@ async function saveSheet(rows, base) {
     document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
 }
-function downloadTemplate() { saveSheet([['Item', 'Qty']].concat(db.inventory.items.map(x => [x.name, 0])), 'inventory-template'); }
+function downloadTemplate() { saveSheet([['Item', 'IMEI', 'Qty']].concat(db.inventory.items.map(x => [x.name, '', 0])), 'inventory-template'); }
 function exportStock() { saveSheet([['Item', 'Qty']].concat(db.inventory.items.map(x => [x.name, x.qty])), 'inventory-stock-' + today()); }
 async function importStock(file) {
   if (!file) return;
@@ -884,25 +897,145 @@ async function importStock(file) {
   rows = rows.filter(r => r.some(c => String(c).trim() !== ''));
   if (!rows.length) { toast('The file is empty.'); return; }
   const h = rows[0].map(c => String(c).toLowerCase());
-  let ni = h.findIndex(c => /item|name|product|particular/.test(c)), qi = h.findIndex(c => /qty|quantity|stock|count|nos/.test(c)), start = 1;
-  if (ni < 0 || qi < 0) { ni = 0; qi = 1; start = isNaN(parseFloat(String(rows[0][1]).replace(/,/g, ''))) ? 1 : 0; }
-  const want = {};
+  let ii = h.findIndex(c => /imei/.test(c));
+  let ni = h.findIndex((c, k) => k !== ii && /item|name|product|particular|model/.test(c));
+  let qi = h.findIndex((c, k) => k !== ii && /qty|quantity|stock|count|nos/.test(c)), start = 1;
+  if (ni < 0 || (qi < 0 && ii < 0)) {
+    ni = 0; ii = -1; qi = 1; start = 0;
+    const v = String(rows[0][1] == null ? '' : rows[0][1]).trim();
+    if (/^\d{8,20}$/.test(v)) { ii = 1; qi = -1; }
+    else if (isNaN(parseFloat(v.replace(/,/g, '')))) start = 1;
+  }
+  const plan = {}, seen = new Set(); let dup = 0, bad = 0;
   rows.slice(start).forEach(r => {
-    const n = String(r[ni] == null ? '' : r[ni]).trim(), q = parseFloat(String(r[qi]).replace(/,/g, ''));
-    if (!n || isNaN(q)) return;
-    const k = n.toLowerCase(); want[k] = want[k] || {name: n, qty: 0}; want[k].qty = r3(want[k].qty + q);
+    const n = String(r[ni] == null ? '' : r[ni]).trim(); if (!n) return;
+    const list = ii >= 0 ? parseImeis(String(r[ii] == null ? '' : r[ii])) : [];
+    const k = n.toLowerCase(), get = () => plan[k] = plan[k] || {name: n, qty: 0, imeis: []};
+    if (list.length) {
+      list.forEach(v => {
+        if (!okImei(v)) { bad++; return; }
+        if (seen.has(v) || findImei1(v)) { dup++; return; }
+        seen.add(v); const p = get(); p.imeis.push(v); p.qty = r3(p.qty + 1);
+      });
+    } else {
+      const q = qi >= 0 ? parseFloat(String(r[qi]).replace(/,/g, '')) : NaN;
+      if (!isNaN(q)) { const p = get(); p.qty = r3(p.qty + q); }
+    }
   });
-  const list = Object.values(want);
-  if (!list.length) { toast('No item and quantity found. The file needs the columns Item and Qty.'); return; }
-  const mode = $('#ivm').value, fresh = list.filter(x => !db.inventory.items.some(i => i.name.toLowerCase() === x.name.toLowerCase())).length;
-  if (!confirm(list.length + ' item(s) found in the file' + (fresh ? ' (' + fresh + ' new item(s) will be created)' : '') + '.\n' + (mode === 'add' ? 'Quantities will be ADDED to the current stock.' : 'Current stock will be REPLACED with these quantities.') + '\n\nContinue?')) return;
-  list.forEach(x => {
+  const plans = Object.values(plan);
+  if (!plans.length) { toast(bad || dup ? 'Nothing to add. ' + dup + ' IMEI already exist, ' + bad + ' not valid.' : 'No item and quantity found. The file needs the columns Item, IMEI and Qty.'); return; }
+  const mode = $('#ivm').value, fresh = plans.filter(x => !db.inventory.items.some(i => i.name.toLowerCase() === x.name.toLowerCase())).length, nIm = plans.reduce((a, x) => a + x.imeis.length, 0);
+  if (!confirm(plans.length + ' item(s) and ' + nIm + ' new IMEI number(s) found in the file' + (fresh ? ' (' + fresh + ' new item(s) will be created)' : '') + '.' + (dup || bad ? '\n' + dup + ' IMEI already exist and ' + bad + ' are not valid; these are skipped.' : '') + '\n' + (mode === 'add' ? 'Quantities will be ADDED to the current stock.' : 'Current stock will be REPLACED with these quantities.') + '\n\nContinue?')) return;
+  plans.forEach(x => {
     let it = db.inventory.items.find(i => i.name.toLowerCase() === x.name.toLowerCase());
-    if (!it) { it = {id: uid(), name: x.name, qty: 0}; db.inventory.items.push(it); }
+    if (!it) { it = {id: uid(), name: x.name, qty: 0, imeis: []}; db.inventory.items.push(it); }
+    x.imeis.forEach(v => it.imeis.push({no: v, bill: '', billId: '', sold: '', added: today()}));
     it.qty = mode === 'add' ? r3(it.qty + x.qty) : x.qty;
-    invLog(it, mode === 'add' ? 'in' : 'set', x.qty, '', 'Excel upload');
+    if (x.qty !== 0 || mode === 'set') invLog(it, mode === 'add' ? 'in' : 'set', x.qty, '', 'Excel upload');
   });
-  save(); toast('Stock updated from file'); renderInventory();
+  save(); toast('Stock updated from file: ' + nIm + ' IMEI added' + (dup ? ', ' + dup + ' duplicate skipped' : '') + (bad ? ', ' + bad + ' not valid' : '')); renderInventory();
+}
+
+/* ---- IMEI ---- */
+let invView = '', imeiQ = '', imeiF = '';
+const okImei = v => /^\d{8,20}$/.test(v);
+const imeiAvail = x => (x.imeis || []).filter(m => !m.billId).length;
+function parseImeis(t) { return Array.from(new Set(String(t || '').split(/[\s,;]+/).filter(Boolean))); }
+function findImei1(v) {
+  for (const it of db.inventory.items) { const m = it.imeis.find(x => x.no === v); if (m) return {it, m}; }
+  return null;
+}
+function imeiHit(i) {
+  const q = invQuery.trim().toLowerCase(); if (!q) return '';
+  const h = []; (i.items || []).forEach(it => (it.imeis || []).forEach(m => { if (String(m).toLowerCase().includes(q)) h.push(m); }));
+  return h.length ? `<div class="small" style="color:var(--accent-dark)">IMEI: ${h.slice(0, 3).map(v => esc(v)).join(', ')}${h.length > 3 ? ' +' + (h.length - 3) : ''}</div>` : '';
+}
+function checkBillImeis(items) {
+  const seen = new Set();
+  for (const it of items) {
+    for (const v of (it.imeis || [])) {
+      if (!okImei(v)) return 'IMEI ' + v + ' is not valid. Use 8 to 20 digits.';
+      if (seen.has(v)) return 'IMEI ' + v + ' is entered twice on this bill.';
+      seen.add(v);
+      const o = findImei1(v);
+      if (o) {
+        if (o.m.billId) return 'IMEI ' + v + ' is already sold on bill ' + o.m.bill + '.';
+        if (o.it.id !== it.inv) return 'IMEI ' + v + ' belongs to ' + o.it.name + ', not to the item chosen.';
+      }
+    }
+  }
+  return '';
+}
+function markImeis(items, no, id, date) {
+  items.forEach(x => (x.imeis || []).forEach(v => {
+    const o = findImei1(v);
+    if (o) { o.m.bill = no; o.m.billId = id; o.m.sold = date; }
+    else { const it = invItem(x.inv); if (it) it.imeis.push({no: v, bill: no, billId: id, sold: date, auto: true}); }
+  }));
+}
+function openImei(id) { if (!can('inv')) return; invView = id; imeiQ = ''; imeiF = ''; go('inv'); }
+function findImei(q) {
+  q = String(q).trim().toLowerCase(); const el = $('#ivfind');
+  if (q.length < 3) { el.innerHTML = ''; return; }
+  const hits = [];
+  db.inventory.items.forEach(it => it.imeis.forEach(m => { if (m.no.toLowerCase().includes(q)) hits.push({it, m}); }));
+  el.innerHTML = hits.length ? `<div class="scroll"><table><thead><tr><th>IMEI</th><th>Item</th><th>Status</th><th>Bill</th><th></th></tr></thead><tbody>${hits.slice(0, 20).map(({it, m}) => `<tr><td>${esc(m.no)}</td><td>${esc(it.name)}</td><td>${m.billId ? 'Sold' : 'Available'}</td><td>${esc(m.bill)}</td><td>${m.billId && db.invoices.some(i => i.id === m.billId) ? `<button class="ghost" onclick="openInvoice('${m.billId}')">View bill</button>` : ''}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No IMEI found.</div>';
+}
+function imeiRowsHTML(it) {
+  const q = imeiQ.trim().toLowerCase();
+  const rows = it.imeis.filter(m => (!q || m.no.toLowerCase().includes(q) || (m.bill || '').toLowerCase().includes(q)) && (!imeiF || (imeiF === 'av' ? !m.billId : !!m.billId)));
+  if (!rows.length) return '<tr><td colspan="5" class="empty">No IMEI numbers here.</td></tr>';
+  return rows.slice(0, 500).map(m => `<tr><td>${esc(m.no)}</td><td>${m.billId ? '<span class="badge dueb">Sold</span>' : '<span class="badge">Available</span>'}</td><td>${esc(m.bill)}</td><td>${esc(m.sold)}</td><td><div class="row-actions">${m.billId && db.invoices.some(i => i.id === m.billId) ? `<button class="ghost" onclick="openInvoice('${m.billId}')">View bill</button>` : ''}${!m.billId && can('delete') ? `<button class="ghost danger" onclick="removeImei('${m.no}')">Remove</button>` : ''}</div></td></tr>`).join('')
+    + (rows.length > 500 ? `<tr><td colspan="5" class="empty">Showing the first 500 of ${rows.length}. Use search to narrow down.</td></tr>` : '');
+}
+function drawImeiRows() { const it = invItem(invView); if (it) $('#imeiRows').innerHTML = imeiRowsHTML(it); }
+function renderImeiPage(id) {
+  const it = invItem(id), av = imeiAvail(it), tot = it.imeis.length;
+  $('#main').innerHTML = `<div class="bar"><h2 style="margin:0">${esc(it.name)}: IMEI numbers</h2><button class="ghost" onclick="invView = ''; renderInventory()">Back to inventory</button></div>
+    <div class="ivg" style="margin-bottom:16px">
+      <div class="ivt"><div class="nm">Stock quantity</div><div class="q">${it.qty}</div></div>
+      <div class="ivt"><div class="nm">IMEI registered</div><div class="q">${tot}</div></div>
+      <div class="ivt"><div class="nm">Available</div><div class="q">${av}</div></div>
+      <div class="ivt ${tot - av ? 'low' : ''}"><div class="nm">Sold</div><div class="q">${tot - av}</div></div>
+    </div>
+    <div class="card"><h3>Add IMEI numbers</h3>
+      <label for="imeiTx">One IMEI per line, or separated by commas or spaces</label>
+      <textarea id="imeiTx" rows="4" placeholder="865432109876543&#10;865432109876544"></textarea>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:10px;color:var(--ink)"><input id="imeiAddQ" type="checkbox" checked style="width:auto">Also add them to the stock quantity (1 each)</label>
+      <div class="row-actions" style="margin-top:12px"><button class="btn" onclick="addImeis()">Add IMEI</button><button class="ghost" onclick="exportImei('${it.id}')">Download IMEI list</button></div></div>
+    <div class="card"><div class="bar"><h3 style="margin:0">All IMEI numbers</h3>
+      <div class="row-actions"><input style="max-width:240px" placeholder="Search IMEI or bill no." value="${esc(imeiQ)}" oninput="imeiQ = this.value; drawImeiRows()" aria-label="Search IMEI">
+      <select style="width:auto" onchange="imeiF = this.value; drawImeiRows()" aria-label="Filter"><option value="">All</option><option value="av" ${imeiF === 'av' ? 'selected' : ''}>Available</option><option value="sold" ${imeiF === 'sold' ? 'selected' : ''}>Sold</option></select></div></div>
+      <div class="scroll"><table><thead><tr><th>IMEI</th><th>Status</th><th>Bill no.</th><th>Sold on</th><th></th></tr></thead><tbody id="imeiRows">${imeiRowsHTML(it)}</tbody></table></div></div>`;
+}
+function addImeis() {
+  const it = invItem(invView); if (!it) return;
+  const list = parseImeis($('#imeiTx').value);
+  if (!list.length) { toast('Enter at least one IMEI number.'); return; }
+  let dup = 0, add = 0, bad = 0;
+  list.forEach(v => {
+    if (!okImei(v)) { bad++; return; }
+    if (findImei1(v)) { dup++; return; }
+    it.imeis.push({no: v, bill: '', billId: '', sold: '', added: today()}); add++;
+  });
+  if (add && $('#imeiAddQ').checked) { it.qty = r3(it.qty + add); invLog(it, 'in', add, '', 'IMEI added'); }
+  if (add) save();
+  toast(add + ' IMEI added' + (dup ? ', ' + dup + ' already exist' : '') + (bad ? ', ' + bad + ' not valid (use 8 to 20 digits)' : ''));
+  renderImeiPage(it.id);
+}
+function removeImei(no) {
+  if (!can('delete')) return;
+  const it = invItem(invView); if (!it) return;
+  const m = it.imeis.find(x => x.no === no); if (!m || m.billId) return;
+  if (!confirm('Remove IMEI ' + no + '? Stock will also reduce by 1.')) return;
+  it.imeis = it.imeis.filter(x => x !== m); it.qty = r3(it.qty - 1); invLog(it, 'out', 1, '', 'IMEI removed ' + no);
+  save(); renderImeiPage(it.id);
+}
+function exportImei(id) {
+  const rows = [['Item', 'IMEI', 'Status', 'Bill no.', 'Sold on']];
+  db.inventory.items.filter(x => !id || x.id === id).forEach(it => it.imeis.forEach(m => rows.push([it.name, m.no, m.billId ? 'Sold' : 'Available', m.bill, m.sold])));
+  if (rows.length < 2) { toast('No IMEI numbers to download.'); return; }
+  saveSheet(rows, 'imei-list-' + today());
 }
 
 /* ---------- payments ---------- */
@@ -910,7 +1043,7 @@ const paidOf = i => (i.payments || []).reduce((a, p) => a + (+p.amount || 0), 0)
 const dueOf = i => Math.max(0, Math.round((i.totals.total - paidOf(i)) * 100) / 100);
 const statusOf = i => dueOf(i) <= 0 ? 'Paid' : (paidOf(i) > 0 ? 'Part paid' : 'Due');
 const stBadge = i => `<span class="badge ${dueOf(i) <= 0 ? '' : 'dueb'}">${statusOf(i)}</span>`;
-const invRow = (i, del, lbl) => `<tr><td>${esc(i.no)}</td><td>${esc(i.date)}</td><td>${esc(i.customer.name)}</td><td class="num">${money(i.totals.total)}</td><td class="num">${money(dueOf(i))}</td><td>${stBadge(i)}</td>
+const invRow = (i, del, lbl) => `<tr><td>${esc(i.no)}</td><td>${esc(i.date)}</td><td>${esc(i.customer.name)}${tab === 'invoices' ? imeiHit(i) : ''}</td><td class="num">${money(i.totals.total)}</td><td class="num">${money(dueOf(i))}</td><td>${stBadge(i)}</td>
   <td><div class="row-actions"><button class="ghost" onclick="openInvoice('${i.id}')">${lbl || 'View / Print'}</button>${can('payment') ? `<button class="ghost" onclick="openPay('${i.id}')">Payment</button>` : ''}${del ? `<button class="ghost danger" onclick="${del}('${i.id}')">Delete</button>` : ''}</div></td></tr>`;
 function rerender() { if (tab === 'dash') renderDash(); else if (tab === 'invoices') drawInvoiceRows(); else if (tab === 'old') renderOld(); }
 let payId = null;
@@ -1454,7 +1587,7 @@ function authed() { try { return sessionStorage.getItem(AUTH) || ''; } catch (e)
 function startSession(u) {
   cur = u.id === 'admin' ? ADMIN : Object.assign({}, u, {role: 'user'});
   try { sessionStorage.setItem(AUTH, cur.id); } catch (e) {}
-  db = load(); draft = newDraft(); imp = null; editP = editC = editB = editU = null; tmpLogo = ''; invQuery = ''; dashSel = ''; tab = '';
+  db = load(); draft = newDraft(); imp = null; editP = editC = editB = editU = null; tmpLogo = ''; invQuery = ''; dashSel = ''; tab = ''; invView = ''; imeiQ = ''; imeiF = '';
   $('#login').hidden = true; $('#lp').value = ''; $('#le').textContent = '';
   applyNav(); go(firstTab() || 'dash');
 }
