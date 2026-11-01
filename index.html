@@ -191,6 +191,18 @@ aside button[hidden]{display:none}
   .inv-bill,.inv-tot,.inv-ft,#sheet tr{break-inside:avoid;page-break-inside:avoid}
   #sheet thead{display:table-header-group}
 }
+
+/* ---- inventory ---- */
+.ivg{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
+.ivt{border:1px solid var(--line);border-left:5px solid #16a34a;border-radius:8px;padding:10px 12px;background:#fff}
+.ivt.low{border-left-color:#f59e0b;background:#fffaf0}
+.ivt.out{border-left-color:#d92d20;background:#fff1ef}
+.ivt .nm{font-size:13px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ivt .q{font-size:26px;font-weight:700;font-variant-numeric:tabular-nums}
+.ivt .s{font-size:12px;font-weight:600;color:#15803d}
+.ivt.low .s{color:#b45309}
+.ivt.out .s{color:#b42318}
+.qneg{color:var(--danger);font-weight:700}
 </style>
 </head>
 <body>
@@ -220,12 +232,12 @@ aside button[hidden]{display:none}
 <div class="app">
   <aside>
     <h1 id="brand">Billing</h1>
-    <div id="syncst" onclick="enqueue()" style="width:100%;font-size:12px;color:#8fa3b8;margin:-12px 8px 14px;cursor:pointer"></div>
     <button data-tab="dash">Dashboard</button>
     <button data-tab="new">New invoice</button>
     <button data-tab="invoices">Invoices</button>
     <button data-tab="old">Old Invoices</button>
     <button data-tab="products">Products</button>
+    <button data-tab="inv">Inventory</button>
     <button data-tab="customers">Customers</button>
     <button data-tab="settings">Settings</button>
     <button data-tab="users">Create account</button>
@@ -245,31 +257,32 @@ aside button[hidden]{display:none}
 </div>
 <div id="toast" role="status"></div>
 
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <script>
 /* ---------- helpers ---------- */
 const KEY = 'billing-app-v1';
-const SB_URL = 'https://pymxqexyhighgslzrqze.supabase.co';
-const SB_KEY = 'sb_publishable_LRypHFBar9BfTSgSk_GWHQ_XEY1Prpy';
-const sb = window.supabase ? window.supabase.createClient(SB_URL, SB_KEY) : null;
-const mail = u => String(u).trim().toLowerCase() + '@billing.example.com';
 let cur = null; // logged-in account
+const dataKey = () => (cur && cur.role === 'user') ? KEY + ':' + cur.id : KEY;
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const money = n => '₹' + (Number(n) || 0).toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
-const uid = () => (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16); });
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 const today = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
 
+const INV_DEFAULT = ['EV02', 'AIS140', 'SIM Card', 'Basic tracker 4G', 'GT06'];
+const LOW_STOCK = 5;
+function defInv() { return {items: INV_DEFAULT.map((n, i) => ({id: 'seed' + i, name: n, qty: 0})), log: []}; }
+function fixInv(x) { if (!x || !Array.isArray(x.items)) return defInv(); if (!Array.isArray(x.log)) x.log = []; return x; }
 function defaults() {
   return {
     settings: {prefix: 'INV-', nextNo: 1, note: 'Thank you for your business.'},
-    businesses: [], defaultBiz: '', products: [], customers: [], invoices: []
+    businesses: [], defaultBiz: '', products: [], customers: [], invoices: [], inventory: defInv()
   };
 }
-function load(d) {
-  d = d || {};
+function load() {
+  let d = {};
+  try { const raw = localStorage.getItem(dataKey()); if (raw) d = JSON.parse(raw) || {}; } catch (e) { /* storage empty or blocked */ }
   const base = defaults(), o = d.settings || {};
-  const r = {settings: Object.assign(base.settings, {prefix: o.prefix, nextNo: o.nextNo, note: o.note}), businesses: d.businesses || [], defaultBiz: d.defaultBiz || '', products: d.products || [], customers: d.customers || [], invoices: d.invoices || []};
+  const r = {settings: Object.assign(base.settings, {prefix: o.prefix, nextNo: o.nextNo, note: o.note}), businesses: d.businesses || [], defaultBiz: d.defaultBiz || '', products: d.products || [], customers: d.customers || [], invoices: d.invoices || [], inventory: fixInv(d.inventory)};
   if (cur && cur.role === 'user') { // company details are fixed by Admin
     if (!d.settings) r.settings.prefix = cur.prefix || 'INV-';
     r.businesses = [{id: 'co-' + cur.id, name: cur.name, address: cur.address || '', phone: cur.phone || '', gstin: cur.gstin || '', logo: cur.logo || ''}];
@@ -287,6 +300,11 @@ function load(d) {
 const defBiz = () => db.businesses.find(b => b.id === db.defaultBiz) || db.businesses[0];
 const bizSnap = id => { const b = db.businesses.find(x => x.id === id) || defBiz(); return {name: b.name, address: b.address, phone: b.phone, gstin: b.gstin, logo: b.logo || ''}; };
 let db = defaults();
+function save() {
+  if (!cur) return false;
+  try { localStorage.setItem(dataKey(), JSON.stringify(db)); return true; }
+  catch (e) { toast('Could not save. Browser storage is full or blocked. Download a backup and delete some old bills.'); return false; }
+}
 let toastTimer;
 function toast(msg) {
   const t = $('#toast'); t.textContent = msg; t.classList.add('show');
@@ -307,7 +325,7 @@ const lineAmt = it => (+it.qty || 0) * (+it.price || 0);
 
 /* ---------- navigation ---------- */
 let tab = 'dash';
-const TABS = ['dash', 'new', 'invoices', 'old', 'products', 'customers', 'settings', 'users'];
+const TABS = ['dash', 'new', 'invoices', 'old', 'products', 'inv', 'customers', 'settings', 'users'];
 const can = p => !!cur && (cur.role === 'admin' || (p !== 'users' && !!(cur.perms || {})[p]));
 const firstTab = () => TABS.find(can);
 function applyNav() { document.querySelectorAll('aside button[data-tab]').forEach(b => b.hidden = !can(b.dataset.tab)); }
@@ -317,10 +335,10 @@ function go(t) {
     if (!f) { $('#main').innerHTML = '<div class="warn">No access has been given to this account. Please ask the Admin.</div>'; return; }
     t = f;
   }
-  if (t !== tab) { tmpLogo = ''; editU = null; editB = null; usersCache = null; }
+  if (t !== tab) { tmpLogo = ''; editU = null; editB = null; }
   tab = t;
   document.querySelectorAll('aside button[data-tab]').forEach(b => b.classList.toggle('on', b.dataset.tab === t));
-  ({new: renderNew, invoices: renderInvoices, products: renderProducts, customers: renderCustomers, settings: renderSettings, old: renderOld, dash: renderDash, users: renderUsers})[t]();
+  ({new: renderNew, invoices: renderInvoices, products: renderProducts, customers: renderCustomers, settings: renderSettings, old: renderOld, dash: renderDash, users: renderUsers, inv: renderInventory})[t]();
   $('#brand').textContent = defBiz().name || 'Billing';
   window.scrollTo(0, 0);
 }
@@ -328,7 +346,7 @@ document.querySelectorAll('aside button[data-tab]').forEach(b => b.onclick = () 
 
 /* ---------- new invoice ---------- */
 let draft = newDraft();
-function newDraft() { return {bizId: db.defaultBiz, customerId: '', date: today(), discount: 0, note: '', items: [{pid: '', name: '', qty: 1, price: 0, tax: 0}]}; }
+function newDraft() { return {bizId: db.defaultBiz, customerId: '', date: today(), discount: 0, note: '', items: [{pid: '', inv: '', name: '', qty: 1, price: 0, tax: 0}]}; }
 
 function renderNew() {
   const d = draft;
@@ -340,6 +358,10 @@ function renderNew() {
           ${db.products.map(p => `<option value="${p.id}" ${p.id === it.pid ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}
         </select>
         <input placeholder="Item name" value="${esc(it.name)}" oninput="setItem(${i}, 'name', this.value)" aria-label="Item name">
+        <select style="margin-top:4px" onchange="setItem(${i}, 'inv', this.value)" aria-label="Stock item (inventory)">
+          <option value="">No stock item (inventory not changed)</option>
+          ${db.inventory.items.map(x => `<option value="${x.id}" ${x.id === it.inv ? 'selected' : ''}>${esc(x.name)} (stock ${x.qty})</option>`).join('')}
+        </select>
       </td>
       <td><input class="num" type="number" min="0" step="any" value="${esc(it.qty)}" oninput="setItem(${i}, 'qty', this.value)" aria-label="Quantity"></td>
       <td><input class="num" type="number" min="0" step="any" value="${esc(it.price)}" oninput="setItem(${i}, 'price', this.value)" aria-label="Price"></td>
@@ -396,18 +418,22 @@ function setItem(i, f, v) { draft.items[i][f] = v; updateTotals(); }
 function pickProduct(i, pid) {
   const it = draft.items[i], p = db.products.find(x => x.id === pid);
   it.pid = pid;
-  if (p) { it.name = p.name; it.price = p.price; it.tax = p.tax; }
+  if (p) { it.name = p.name; it.price = p.price; it.tax = p.tax; const m = db.inventory.items.find(x => x.name.toLowerCase() === p.name.toLowerCase()); if (m) it.inv = m.id; }
   renderNew();
 }
-function addRow() { draft.items.push({pid: '', name: '', qty: 1, price: 0, tax: 0}); renderNew(); }
+function addRow() { draft.items.push({pid: '', inv: '', name: '', qty: 1, price: 0, tax: 0}); renderNew(); }
 function delRow(i) {
   draft.items.splice(i, 1);
-  if (!draft.items.length) draft.items.push({pid: '', name: '', qty: 1, price: 0, tax: 0});
+  if (!draft.items.length) draft.items.push({pid: '', inv: '', name: '', qty: 1, price: 0, tax: 0});
   renderNew();
 }
 function saveInvoice() {
-  const items = draft.items.filter(it => it.name.trim() && +it.qty > 0).map(it => ({name: it.name.trim(), qty: +it.qty, price: +it.price || 0, tax: +it.tax || 0}));
+  const items = draft.items.filter(it => it.name.trim() && +it.qty > 0).map(it => ({name: it.name.trim(), qty: +it.qty, price: +it.price || 0, tax: +it.tax || 0, inv: it.inv || ''}));
   if (!items.length) { toast('Add at least one item with a name and quantity.'); return; }
+  const need = {};
+  items.forEach(it => { if (it.inv) need[it.inv] = (need[it.inv] || 0) + it.qty; });
+  const lack = Object.keys(need).map(id => ({it: invItem(id), n: need[id]})).filter(x => x.it && x.n > x.it.qty);
+  if (lack.length && !confirm('Stock is not enough:\n' + lack.map(x => x.it.name + ': stock ' + x.it.qty + ', bill ' + x.n).join('\n') + '\n\nCreate the bill anyway? Stock will go below zero.')) return;
   const c = db.customers.find(x => x.id === draft.customerId);
   const s = db.settings;
   const inv = {
@@ -417,6 +443,7 @@ function saveInvoice() {
   };
   inv.totals = calc(items, inv.discount);
   s.nextNo++;
+  stockOut(items, inv.no, inv.date);
   db.invoices.unshift(inv);
   save();
   draft = newDraft();
@@ -487,17 +514,10 @@ function openInvoice(id) {
   if (inv.orig) { choiceId = id; $('#choice').hidden = false; } else showInvoice(id);
 }
 function pickChoice(w) { $('#choice').hidden = true; if (w === 'old') showOld(choiceId); else showInvoice(choiceId); }
-async function showOld(id) {
+function showOld(id) {
   const inv = db.invoices.find(x => x.id === id); if (!inv || !inv.orig) return;
-  let blob;
-  if (inv.orig.data) blob = toBlob(inv.orig.data);
-  else {
-    const r = await sb.storage.from('old-bills').download(inv.orig.path);
-    if (r.error || !r.data) { toast('Could not open the old bill.'); return; }
-    blob = r.data;
-  }
   if (oldUrl) URL.revokeObjectURL(oldUrl);
-  oldUrl = URL.createObjectURL(blob);
+  oldUrl = URL.createObjectURL(toBlob(inv.orig.data));
   const pdf = inv.orig.type === 'application/pdf';
   $('#sheet').innerHTML = (pdf ? `<iframe src="${oldUrl}" title="Old bill" style="width:100%;height:78vh;border:0"></iframe>` : `<img src="${oldUrl}" alt="Old bill" style="max-width:100%">`)
     + `<p style="margin:10px 16px"><a href="${oldUrl}" target="_blank" rel="noopener">Open old bill in a new tab</a></p>`;
@@ -527,6 +547,7 @@ function drawInvoiceRows() {
 function delInvoice(id) {
   if (!can('delete')) return;
   if (!confirm('Delete this invoice? This cannot be undone.')) return;
+  const gone = db.invoices.find(i => i.id === id); if (gone) stockBack(gone);
   db.invoices = db.invoices.filter(i => i.id !== id); save(); drawInvoiceRows();
 }
 
@@ -646,10 +667,9 @@ function renderSettings() {
       <div style="margin-top:12px"><label for="sf">Default note at the bottom of invoices</label><textarea id="sf" rows="2">${esc(s.note)}</textarea></div>
       <div style="margin-top:12px"><button class="btn" onclick="saveSettings()">Save settings</button></div></div>
     <div class="card"><h3>Backup</h3>
-      <p style="margin-top:0;color:var(--muted)">Your data is saved online, so it is safe if you change computer or browser. A backup file is optional.</p>
+      <p style="margin-top:0;color:var(--muted)">Data is stored in this browser only. Download a backup regularly, and use Restore to load it on another computer.</p>
       <div class="row-actions">
         <button class="ghost" onclick="exportData()">Download backup</button>
-        ${localStorage.getItem(KEY) ? '<button class="ghost" onclick="importLocal()">Move old data from this browser</button>' : ''}
         <button class="ghost" onclick="$('#imp').click()">Restore from backup</button>
         ${can('delete') ? '<button class="ghost danger" onclick="wipe()">Delete all data</button>' : ''}
         <input id="imp" type="file" accept="application/json" hidden onchange="importData(this.files[0])">
@@ -699,11 +719,6 @@ function exportData() {
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
-function applyImport(d) {
-  (d.invoices || []).forEach(i => { if (!/^[0-9a-f-]{36}$/i.test(String(i.id))) i.id = uid(); });
-  db = load(d); draft = newDraft(); save();
-  toast('Data restored. Saving online…'); go('settings');
-}
 function importData(file) {
   if (!file) return;
   const r = new FileReader();
@@ -711,25 +726,183 @@ function importData(file) {
     try {
       const d = JSON.parse(r.result);
       if (!d || !Array.isArray(d.invoices) || !Array.isArray(d.products) || !Array.isArray(d.customers)) throw new Error('bad file');
-      if (!confirm('This replaces your current online data with the backup. Continue?')) return;
-      applyImport(d);
+      if (!confirm('This replaces the data currently in this browser. Continue?')) return;
+      localStorage.setItem(dataKey(), JSON.stringify(d)); db = load();
+      save(); toast('Backup restored'); go('settings');
     } catch (e) { toast('This file is not a valid backup.'); }
   };
   r.readAsText(file);
 }
-function importLocal() {
-  try {
-    const d = JSON.parse(localStorage.getItem(KEY));
-    if (!d || !Array.isArray(d.invoices)) throw new Error('none');
-    if (!confirm('Move the data saved in this browser (' + d.invoices.length + ' bills) to your online account? This replaces your current online data.')) return;
-    applyImport(d);
-  } catch (e) { toast('No old data found in this browser.'); }
-}
 function wipe() {
   if (!can('delete')) return;
-  if (!confirm('Delete ALL products, customers and invoices?')) return;
+  if (!confirm('Delete ALL products, customers and invoices from this browser?')) return;
   if (!confirm('Last check: this cannot be undone. Delete everything?')) return;
-  db = load({}); save(); draft = newDraft(); go('settings');
+  localStorage.removeItem(dataKey()); db = load(); save(); draft = newDraft(); go('settings');
+}
+
+/* ---------- inventory ---------- */
+const invItem = id => db.inventory.items.find(x => x.id === id);
+const r3 = n => Math.round(n * 1000) / 1000;
+function invLog(it, type, qty, ref, note, date) {
+  db.inventory.log.unshift({id: uid(), date: date || today(), item: it.id, name: it.name, type, qty, bal: it.qty, ref: ref || '', note: note || ''});
+  if (db.inventory.log.length > 500) db.inventory.log.length = 500;
+}
+function stockOut(items, ref, date) {
+  items.forEach(x => { const it = x.inv && invItem(x.inv); if (!it) return; it.qty = r3(it.qty - x.qty); invLog(it, 'out', x.qty, ref, 'Bill', date); });
+}
+function stockBack(inv) {
+  (inv.items || []).forEach(x => { const it = x.inv && invItem(x.inv); if (!it) return; it.qty = r3(it.qty + x.qty); invLog(it, 'in', x.qty, inv.no, 'Bill deleted'); });
+}
+function invStatus() {
+  const it = db.inventory.items;
+  if (!it.length) return '<div class="empty">No items yet. Create items in Inventory.</div>';
+  return '<div class="ivg">' + it.map(x => {
+    const c = x.qty <= 0 ? 'out' : (x.qty <= LOW_STOCK ? 'low' : ''), t = x.qty <= 0 ? 'Out of stock' : (x.qty <= LOW_STOCK ? 'Low stock' : 'In stock');
+    return `<div class="ivt ${c}"><div class="nm" title="${esc(x.name)}">${esc(x.name)}</div><div class="q">${x.qty}</div><div class="s">${t}</div></div>`;
+  }).join('') + '</div>';
+}
+const TYPE_LBL = {in: 'Stock in', out: 'Stock out', set: 'Set to'};
+function renderInventory() {
+  const items = db.inventory.items, log = db.inventory.log.slice(0, 50);
+  const opts = items.map(x => `<option value="${x.id}">${esc(x.name)} (stock ${x.qty})</option>`).join('');
+  $('#main').innerHTML = `<h2>Inventory</h2>
+    <div class="card"><h3>Stock now</h3>${invStatus()}</div>
+    <div class="card"><h3>Create item</h3>
+      <div class="grid">
+        <div><label for="ivn">Item name</label><input id="ivn" placeholder="e.g. GT06" onkeydown="if (event.key === 'Enter') addInvItem()"></div>
+        <div><label for="ivq">Opening stock (optional)</label><input id="ivq" type="number" min="0" step="any" value="0"></div>
+      </div>
+      <div style="margin-top:12px"><button class="btn" onclick="addInvItem()">Create item</button></div></div>
+    <div class="card"><h3>Stock entry</h3>
+      ${items.length ? `<div class="grid">
+        <div><label for="ive">Item</label><select id="ive">${opts}</select></div>
+        <div><label for="ivt">Entry type</label><select id="ivt"><option value="in">Stock in (add)</option><option value="out">Stock out (reduce)</option><option value="set">Set exact stock (correction)</option></select></div>
+        <div><label for="ivs">Quantity</label><input id="ivs" type="number" min="0" step="any" value="1"></div>
+        <div><label for="ivd">Date</label><input id="ivd" type="date" value="${today()}"></div>
+        <div><label for="ivo">Note (optional)</label><input id="ivo" placeholder="Supplier, purchase bill no., etc."></div>
+      </div>
+      <div style="margin-top:12px"><button class="btn" onclick="saveStock()">Save entry</button></div>` : '<div class="empty">Create an item first.</div>'}</div>
+    <div class="card"><h3>Upload Excel</h3>
+      <p style="margin-top:0;color:var(--muted)">Upload an Excel (.xlsx, .xls) or CSV file with two columns: <b>Item</b> and <b>Qty</b>. Items that do not exist yet are created automatically.</p>
+      <div class="grid">
+        <div><label for="ivf">Excel / CSV file</label><input id="ivf" type="file" accept=".xlsx,.xls,.csv,.txt" onchange="importStock(this.files[0]); this.value = ''"></div>
+        <div><label for="ivm">What to do with the quantities</label><select id="ivm"><option value="add">Add to current stock</option><option value="set">Replace current stock</option></select></div>
+      </div>
+      <div class="row-actions" style="margin-top:12px">
+        <button class="ghost" onclick="downloadTemplate()">Download Excel template</button>
+        <button class="ghost" onclick="exportStock()">Download current stock</button>
+      </div></div>
+    <div class="card"><h3>Items</h3><div class="scroll"><table>
+      <thead><tr><th>Item</th><th class="num">Stock</th><th></th></tr></thead>
+      <tbody>${items.length ? items.map(x => `<tr><td>${esc(x.name)}</td><td class="num ${x.qty < 0 ? 'qneg' : ''}">${x.qty}</td>
+        <td><div class="row-actions"><button class="ghost" onclick="renameInvItem('${x.id}')">Rename</button>${can('delete') ? `<button class="ghost danger" onclick="delInvItem('${x.id}')">Delete</button>` : ''}</div></td></tr>`).join('')
+        : '<tr><td colspan="3" class="empty">No items yet.</td></tr>'}</tbody></table></div></div>
+    <div class="card"><h3>Stock history (last 50)</h3><div class="scroll"><table>
+      <thead><tr><th>Date</th><th>Item</th><th>Type</th><th class="num">Qty</th><th class="num">Balance</th><th>Bill / Note</th></tr></thead>
+      <tbody>${log.length ? log.map(l => `<tr><td>${esc(l.date)}</td><td>${esc(l.name)}</td><td>${TYPE_LBL[l.type] || ''}</td><td class="num">${l.qty}</td><td class="num">${l.bal}</td><td>${esc([l.ref, l.note].filter(Boolean).join(' · '))}</td></tr>`).join('')
+        : '<tr><td colspan="6" class="empty">No stock movement yet.</td></tr>'}</tbody></table></div></div>`;
+}
+function addInvItem() {
+  const name = $('#ivn').value.trim(), q = Math.max(0, +$('#ivq').value || 0);
+  if (!name) { toast('Enter the item name.'); return; }
+  if (db.inventory.items.some(x => x.name.toLowerCase() === name.toLowerCase())) { toast('This item already exists.'); return; }
+  const it = {id: uid(), name, qty: q};
+  db.inventory.items.push(it);
+  if (q > 0) invLog(it, 'in', q, '', 'Opening stock');
+  save(); toast('Item created'); renderInventory();
+}
+function renameInvItem(id) {
+  const it = invItem(id); if (!it) return;
+  const n = (prompt('New name for this item:', it.name) || '').trim();
+  if (!n || n === it.name) return;
+  if (db.inventory.items.some(x => x.id !== id && x.name.toLowerCase() === n.toLowerCase())) { toast('This item already exists.'); return; }
+  it.name = n; save(); renderInventory();
+}
+function delInvItem(id) {
+  if (!can('delete')) return;
+  const it = invItem(id); if (!it) return;
+  if (!confirm('Delete item "' + it.name + '"? Old bills will not change.')) return;
+  db.inventory.items = db.inventory.items.filter(x => x.id !== id); save(); renderInventory();
+}
+function saveStock() {
+  const it = invItem($('#ive').value); if (!it) { toast('Select an item.'); return; }
+  const type = $('#ivt').value, q = +$('#ivs').value, date = $('#ivd').value || today(), note = $('#ivo').value.trim();
+  if (isNaN(q) || q < 0 || (type !== 'set' && q <= 0)) { toast('Enter a valid quantity.'); return; }
+  if (type === 'out' && q > it.qty && !confirm('Only ' + it.qty + ' in stock. Reduce by ' + q + ' anyway?')) return;
+  it.qty = type === 'in' ? r3(it.qty + q) : (type === 'out' ? r3(it.qty - q) : r3(q));
+  invLog(it, type, q, '', note, date);
+  save(); toast('Stock updated'); renderInventory();
+}
+function parseCSV(t) {
+  t = t.replace(/^﻿/, '');
+  const first = t.split('\n')[0], d = first.includes('\t') && !first.includes(',') ? '\t' : (first.includes(';') && !first.includes(',') ? ';' : ',');
+  const rows = []; let r = [], c = '', q = false;
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
+    if (q) { if (ch === '"') { if (t[i + 1] === '"') { c += '"'; i++; } else q = false; } else c += ch; }
+    else if (ch === '"') q = true;
+    else if (ch === d) { r.push(c); c = ''; }
+    else if (ch === '\n' || ch === '\r') { if (ch === '\r' && t[i + 1] === '\n') i++; r.push(c); c = ''; rows.push(r); r = []; }
+    else c += ch;
+  }
+  if (c !== '' || r.length) { r.push(c); rows.push(r); }
+  return rows;
+}
+let xlsxReady = null;
+function loadXlsx() {
+  if (window.XLSX) return Promise.resolve();
+  if (xlsxReady) return xlsxReady;
+  const urls = ['https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js', 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'];
+  const tryLoad = i => new Promise((ok, no) => {
+    const sc = document.createElement('script'); sc.src = urls[i];
+    sc.onload = ok; sc.onerror = () => { sc.remove(); no(new Error('xlsx')); };
+    document.head.appendChild(sc);
+  }).catch(e => i + 1 < urls.length ? tryLoad(i + 1) : Promise.reject(e));
+  xlsxReady = tryLoad(0).catch(e => { xlsxReady = null; throw e; });
+  return xlsxReady;
+}
+async function saveSheet(rows, base) {
+  try {
+    await loadXlsx();
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Stock');
+    XLSX.writeFile(wb, base + '.xlsx');
+  } catch (e) {
+    const csv = '﻿' + rows.map(r => r.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(',')).join('\r\n');
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], {type: 'text/csv'})); a.download = base + '.csv';
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+}
+function downloadTemplate() { saveSheet([['Item', 'Qty']].concat(db.inventory.items.map(x => [x.name, 0])), 'inventory-template'); }
+function exportStock() { saveSheet([['Item', 'Qty']].concat(db.inventory.items.map(x => [x.name, x.qty])), 'inventory-stock-' + today()); }
+async function importStock(file) {
+  if (!file) return;
+  let rows;
+  try {
+    if (/\.(csv|txt)$/i.test(file.name)) rows = parseCSV(await file.text());
+    else { await loadXlsx(); const wb = XLSX.read(await file.arrayBuffer(), {type: 'array'}); rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {header: 1, defval: ''}); }
+  } catch (e) { toast('This file could not be read. Check the internet, or upload a CSV file.'); return; }
+  rows = rows.filter(r => r.some(c => String(c).trim() !== ''));
+  if (!rows.length) { toast('The file is empty.'); return; }
+  const h = rows[0].map(c => String(c).toLowerCase());
+  let ni = h.findIndex(c => /item|name|product|particular/.test(c)), qi = h.findIndex(c => /qty|quantity|stock|count|nos/.test(c)), start = 1;
+  if (ni < 0 || qi < 0) { ni = 0; qi = 1; start = isNaN(parseFloat(String(rows[0][1]).replace(/,/g, ''))) ? 1 : 0; }
+  const want = {};
+  rows.slice(start).forEach(r => {
+    const n = String(r[ni] == null ? '' : r[ni]).trim(), q = parseFloat(String(r[qi]).replace(/,/g, ''));
+    if (!n || isNaN(q)) return;
+    const k = n.toLowerCase(); want[k] = want[k] || {name: n, qty: 0}; want[k].qty = r3(want[k].qty + q);
+  });
+  const list = Object.values(want);
+  if (!list.length) { toast('No item and quantity found. The file needs the columns Item and Qty.'); return; }
+  const mode = $('#ivm').value, fresh = list.filter(x => !db.inventory.items.some(i => i.name.toLowerCase() === x.name.toLowerCase())).length;
+  if (!confirm(list.length + ' item(s) found in the file' + (fresh ? ' (' + fresh + ' new item(s) will be created)' : '') + '.\n' + (mode === 'add' ? 'Quantities will be ADDED to the current stock.' : 'Current stock will be REPLACED with these quantities.') + '\n\nContinue?')) return;
+  list.forEach(x => {
+    let it = db.inventory.items.find(i => i.name.toLowerCase() === x.name.toLowerCase());
+    if (!it) { it = {id: uid(), name: x.name, qty: 0}; db.inventory.items.push(it); }
+    it.qty = mode === 'add' ? r3(it.qty + x.qty) : x.qty;
+    invLog(it, mode === 'add' ? 'in' : 'set', x.qty, '', 'Excel upload');
+  });
+  save(); toast('Stock updated from file'); renderInventory();
 }
 
 /* ---------- payments ---------- */
@@ -848,6 +1021,7 @@ function renderDash(scroll) {
         ${barChart(dashRange)}</div>
       <div class="card"><div class="ch-h"><h3>Collected vs due</h3></div>${donut()}</div>
       <div class="card wide"><div class="ch-h"><h3>Customers with most due</h3></div>${topDue(dueList)}</div>
+      <div class="card wide"><div class="ch-h"><h3>Inventory status</h3>${can('inv') ? `<button class="ghost" onclick="go('inv')">Open inventory</button>` : ''}</div>${invStatus()}</div>
     </div>${detail}`;
   if (scroll) { const el = $('#dd'); if (el) el.scrollIntoView({behavior: 'smooth', block: 'start'}); }
 }
@@ -1200,105 +1374,26 @@ function delOld(id) {
   db.invoices = db.invoices.filter(i => i.id !== id); save(); renderOld();
 }
 
-/* ---------- online saving ---------- */
-let queueP = Promise.resolve(), dirty = false, flushing = false, saveTimer = null;
-const synced = new Map();
-const setStatus = t => { const e = $('#syncst'); if (e) e.textContent = t; };
-const origPath = i => (i.orig && i.orig.path) || '';
-const rowOf = inv => {
-  const rest = Object.assign({}, inv); delete rest.orig;
-  if (inv.orig) rest.orig = {name: inv.orig.name, type: inv.orig.type, path: inv.orig.path};
-  return {id: inv.id, user_id: cur.id, inv_no: inv.no, inv_date: inv.date, data: rest};
-};
-const sigOf = inv => JSON.stringify(rowOf(inv));
-function enqueue() { queueP = queueP.then(doFlush).catch(() => {}); return queueP; }
-function save() {
-  if (!cur) return false;
-  dirty = true; clearTimeout(saveTimer); saveTimer = setTimeout(enqueue, 500);
-  setStatus('Saving…');
-  return true;
-}
-function flushNow() { clearTimeout(saveTimer); return dirty ? enqueue() : queueP; }
-async function doFlush() {
-  if (!cur || !dirty) return;
-  dirty = false; flushing = true; setStatus('Saving…');
-  try {
-    const d = {settings: db.settings, products: db.products, customers: db.customers};
-    if (cur.role === 'admin') { d.businesses = db.businesses; d.defaultBiz = db.defaultBiz; }
-    let r = await sb.from('user_data').upsert({user_id: cur.id, data: d, updated_at: new Date().toISOString()});
-    if (r.error) throw r.error;
-    for (const inv of db.invoices) {
-      if (inv.orig && inv.orig.data && !inv.orig.path) {
-        const path = cur.id + '/' + inv.id;
-        const up = await sb.storage.from('old-bills').upload(path, toBlob(inv.orig.data), {contentType: inv.orig.type});
-        if (up.error && !/exist|duplicate/i.test(up.error.message || '')) throw up.error;
-        inv.orig.path = path; delete inv.orig.data;
-      }
-      const sig = sigOf(inv), old = synced.get(inv.id);
-      if (!old || old.sig !== sig) {
-        r = await sb.from('invoices').upsert(rowOf(inv));
-        if (r.error) throw r.error;
-        synced.set(inv.id, {sig, path: origPath(inv)});
-      }
-    }
-    const keep = new Set(db.invoices.map(i => i.id));
-    for (const [id, o] of Array.from(synced)) {
-      if (keep.has(id)) continue;
-      r = await sb.from('invoices').delete().eq('id', id).eq('user_id', cur.id);
-      if (r.error) throw r.error;
-      if (o.path) sb.storage.from('old-bills').remove([o.path]);
-      synced.delete(id);
-    }
-    setStatus('Saved online ✓');
-  } catch (e) {
-    dirty = true; setStatus('Not saved. Tap to retry');
-    toast('Could not save online: ' + (e.message || e));
-    clearTimeout(saveTimer); saveTimer = setTimeout(enqueue, 15000);
-  }
-  flushing = false;
-}
-window.addEventListener('beforeunload', e => { if (dirty || flushing) { e.preventDefault(); e.returnValue = ''; } });
-async function loadAll() {
-  const a = await sb.from('user_data').select('data').eq('user_id', cur.id).maybeSingle();
-  if (a.error) throw a.error;
-  const b = await sb.from('invoices').select('id,data').eq('user_id', cur.id).order('created_at', {ascending: false});
-  if (b.error) throw b.error;
-  const d = Object.assign({}, a.data ? a.data.data : {});
-  d.invoices = b.data.map(r => Object.assign({}, r.data, {id: r.id}));
-  const res = load(d);
-  synced.clear(); res.invoices.forEach(i => synced.set(i.id, {sig: sigOf(i), path: origPath(i)}));
-  return res;
-}
-
 /* ---------- create account (Admin only) ---------- */
-const PERMS = [['dash', 'Dashboard'], ['new', 'Create new invoice'], ['invoices', 'View invoices'], ['old', 'Old invoices (upload)'], ['products', 'Products'], ['customers', 'Customers'], ['settings', 'Settings (numbering, backup)'], ['payment', 'Record payments'], ['delete', 'Delete bills and records']];
-const DEF_PERMS = ['dash', 'new', 'invoices', 'products', 'customers', 'payment'];
-let editU = null, usersCache = null, ubills = [];
-async function fetchUsers() {
-  const r = await sb.from('profiles').select('*').eq('role', 'user').order('created_at', {ascending: true});
-  if (r.error) throw r.error;
-  const counts = await Promise.all(r.data.map(u => sb.from('invoices').select('id', {count: 'exact', head: true}).eq('user_id', u.id)));
-  r.data.forEach((u, i) => { u.bills = counts[i].count || 0; u.company = u.company || {}; u.perms = u.perms || {}; });
-  return r.data;
-}
-async function renderUsers(reload) {
-  if (!usersCache || reload) {
-    $('#main').innerHTML = '<h2>Create account</h2><div class="empty">Loading…</div>';
-    try { usersCache = await fetchUsers(); }
-    catch (e) { $('#main').innerHTML = '<h2>Create account</h2><div class="warn">Could not load accounts: ' + esc(e.message || e) + '</div>'; return; }
-  }
-  const users = usersCache;
-  const cu = users.find(x => x.id === editU);
-  const u = cu ? Object.assign({username: cu.username}, cu.company, {perms: cu.perms}) : {username: '', name: '', phone: '', gstin: '', address: '', prefix: 'INV-', perms: Object.fromEntries(DEF_PERMS.map(k => [k, true]))};
+const USERS_KEY = 'billing-users-v1';
+const PERMS = [['dash', 'Dashboard'], ['new', 'Create new invoice'], ['invoices', 'View invoices'], ['old', 'Old invoices (upload)'], ['products', 'Products'], ['customers', 'Customers'], ['settings', 'Settings (numbering, backup)'], ['payment', 'Record payments'], ['inv', 'Inventory (items, stock entry, upload)'], ['delete', 'Delete bills and records']];
+const DEF_PERMS = ['dash', 'new', 'invoices', 'products', 'inv', 'customers', 'payment'];
+function getUsers() { try { return JSON.parse(localStorage.getItem(USERS_KEY)) || []; } catch (e) { return []; } }
+function saveUsers(u) { try { localStorage.setItem(USERS_KEY, JSON.stringify(u)); return true; } catch (e) { toast('Could not save. Browser storage is full or blocked.'); return false; } }
+function billCount(id) { try { return (JSON.parse(localStorage.getItem(KEY + ':' + id) || '{}').invoices || []).length; } catch (e) { return 0; } }
+let editU = null;
+function renderUsers() {
+  const users = getUsers();
+  const u = users.find(x => x.id === editU) || {username: '', name: '', phone: '', gstin: '', address: '', prefix: 'INV-', perms: Object.fromEntries(DEF_PERMS.map(k => [k, true]))};
   const pm = u.perms || {};
   $('#main').innerHTML = `
     <h2>Create account</h2>
     <div class="card"><h3>${editU ? 'Edit account' : 'New account'}</h3>
-      <p style="margin-top:0;color:var(--muted)">Fill the company details here once. The user logs in with the link, User ID and password you give. They can only bill for this company, cannot change company name, GSTIN or logo, and never see other users' bills. Everything is saved online.</p>
+      <p style="margin-top:0;color:var(--muted)">Fill the company details here once. This user can only bill for this company. They cannot see or change company name, GSTIN or logo, and they never see other users' bills.</p>
       <div class="sec" style="margin-top:0">Login</div>
       <div class="grid">
-        <div><label for="uu">User ID (letters, numbers, . _ -)</label><input id="uu" autocomplete="off" autocapitalize="none" value="${esc(u.username)}" ${editU ? 'disabled' : ''}></div>
-        <div><label for="up">Password (at least 6 characters)</label><input id="up" autocomplete="off" placeholder="${editU ? 'Leave blank to keep the same' : ''}"></div>
+        <div><label for="uu">User ID</label><input id="uu" autocomplete="off" value="${esc(u.username)}"></div>
+        <div><label for="up">Password</label><input id="up" autocomplete="off" placeholder="${editU ? 'Leave blank to keep the same' : 'At least 4 characters'}"></div>
       </div>
       <div class="sec">Company details (shown on this user's invoices)</div>
       <div class="grid">
@@ -1313,7 +1408,7 @@ async function renderUsers(reload) {
       <div class="sec">Rights (what this user can do)</div>
       <div class="perms">${PERMS.map(([k, l]) => `<label><input type="checkbox" id="pm-${k}" ${pm[k] ? 'checked' : ''}>${l}</label>`).join('')}</div>
       <div class="row-actions" style="margin-top:16px">
-        <button class="btn" id="usv" onclick="saveUser()">${editU ? 'Update account' : 'Create account'}</button>
+        <button class="btn" onclick="saveUser()">${editU ? 'Update account' : 'Create account'}</button>
         ${editU ? '<button class="ghost" onclick="editU = null; tmpLogo = \'\'; renderUsers()">Cancel</button>' : ''}
         ${tmpLogo ? '<button class="ghost" onclick="tmpLogo = \'\'; $(\'#lgp\').hidden = true">Remove logo</button>' : ''}
       </div>
@@ -1321,125 +1416,63 @@ async function renderUsers(reload) {
     <div class="card"><h3>Accounts</h3><div class="scroll"><table>
       <thead><tr><th>Logo</th><th>Company</th><th>User ID</th><th>Rights</th><th class="num">Bills</th><th></th></tr></thead>
       <tbody>${users.length ? users.map(x => `<tr>
-        <td>${x.company.logo ? `<img class="logo-thumb" src="${x.company.logo}" alt="">` : ''}</td>
-        <td>${esc(x.company.name)}<div class="small" style="color:var(--muted)">${esc(x.company.gstin || '')}</div></td><td>${esc(x.username)}</td>
-        <td class="rt">${PERMS.filter(([k]) => x.perms[k]).map(p => p[1]).join(', ') || 'None'}</td>
-        <td class="num">${x.bills}</td>
-        <td><div class="row-actions"><button class="ghost" onclick="editU = '${x.id}'; tmpLogo = usersCache.find(y => y.id === '${x.id}').company.logo || ''; renderUsers(); window.scrollTo(0, 0)">Edit</button>
-        <button class="ghost" onclick="viewUserBills('${x.id}')">Bills</button>
+        <td>${x.logo ? `<img class="logo-thumb" src="${x.logo}" alt="">` : ''}</td>
+        <td>${esc(x.name)}<div class="small" style="color:var(--muted)">${esc(x.gstin)}</div></td><td>${esc(x.username)}</td>
+        <td class="rt">${PERMS.filter(([k]) => (x.perms || {})[k]).map(p => p[1]).join(', ') || 'None'}</td>
+        <td class="num">${billCount(x.id)}</td>
+        <td><div class="row-actions"><button class="ghost" onclick="editU = '${x.id}'; tmpLogo = getUsers().find(y => y.id === '${x.id}').logo || ''; renderUsers(); window.scrollTo(0, 0)">Edit</button>
         <button class="ghost danger" onclick="delUser('${x.id}')">Delete</button></div></td></tr>`).join('')
         : '<tr><td colspan="6" class="empty">No accounts yet. Create the first one above.</td></tr>'}</tbody></table></div></div>`;
 }
-async function createAuthUser(username, pw) {
-  const tmp = window.supabase.createClient(SB_URL, SB_KEY, {auth: {persistSession: false, autoRefreshToken: false, detectSessionInUrl: false}});
-  let r = await tmp.auth.signUp({email: mail(username), password: pw});
-  if (r.error) {
-    if (!/registered|exists/i.test(r.error.message || '')) throw r.error;
-    r = await tmp.auth.signInWithPassword({email: mail(username), password: pw});
-    if (r.error) throw new Error('This User ID was used before. Please choose another ID.');
-  }
-  if (!r.data || !r.data.user) throw new Error('Could not create the login.');
-  return r.data.user.id;
-}
-let userBusy = false;
-async function saveUser() {
-  if (userBusy) return;
-  const username = $('#uu').value.trim().toLowerCase(), pw = $('#up').value, name = $('#un').value.trim();
-  if (!editU) {
-    if (!/^[a-z0-9._-]{3,30}$/.test(username)) { toast('User ID: 3 to 30 letters or numbers, no spaces.'); return; }
-    if (username === 'admin') { toast('This User ID is reserved.'); return; }
-    if (usersCache.some(x => x.username.toLowerCase() === username)) { toast('This User ID already exists.'); return; }
-  }
-  if ((!editU || pw) && pw.length < 6) { toast('Password must be at least 6 characters.'); return; }
+function saveUser() {
+  const username = $('#uu').value.trim(), pw = $('#up').value, name = $('#un').value.trim();
+  if (!username) { toast('Enter a User ID.'); return; }
+  if (username.toLowerCase() === 'admin') { toast('This User ID is reserved.'); return; }
+  const users = getUsers();
+  if (users.some(x => x.id !== editU && x.username.toLowerCase() === username.toLowerCase())) { toast('This User ID already exists.'); return; }
+  if ((!editU || pw) && pw.length < 4) { toast('Password must be at least 4 characters.'); return; }
   if (!name) { toast('Enter the company name.'); return; }
   const perms = {}; PERMS.forEach(([k]) => perms[k] = $('#pm-' + k).checked);
   if (!Object.values(perms).some(Boolean)) { toast('Give at least one right.'); return; }
-  const old = editU ? usersCache.find(x => x.id === editU).company : {};
-  const company = {name, phone: $('#uph').value.trim(), gstin: $('#ug').value.trim().toUpperCase(), address: $('#ua').value.trim(), logo: tmpLogo, prefix: editU ? (old.prefix || 'INV-') : ($('#ux').value.trim() || 'INV-')};
-  userBusy = true; $('#usv').disabled = true;
-  try {
-    if (editU) {
-      let r = await sb.from('profiles').update({company, perms}).eq('id', editU);
-      if (r.error) throw r.error;
-      if (pw) { r = await sb.rpc('admin_set_password', {uid: editU, new_password: pw}); if (r.error) throw r.error; }
-    } else {
-      const id = await createAuthUser(username, pw);
-      const r = await sb.from('profiles').insert({id, username, role: 'user', company, perms});
-      if (r.error) throw r.error;
-    }
-    editU = null; tmpLogo = ''; toast('Account saved');
-    userBusy = false; await renderUsers(true);
-  } catch (e) { userBusy = false; const b = $('#usv'); if (b) b.disabled = false; toast('Could not save: ' + (e.message || e)); }
+  const data = {username, name, phone: $('#uph').value.trim(), gstin: $('#ug').value.trim().toUpperCase(), address: $('#ua').value.trim(), logo: tmpLogo, perms};
+  if (editU) { const x = users.find(y => y.id === editU); Object.assign(x, data); if (pw) x.password = pw; }
+  else users.push(Object.assign({id: uid(), password: pw, prefix: ($('#ux').value || 'INV-')}, data));
+  if (!saveUsers(users)) return;
+  editU = null; tmpLogo = ''; toast('Account saved'); renderUsers();
 }
-async function delUser(id) {
-  const u = usersCache.find(x => x.id === id); if (!u) return;
-  if (!confirm('Delete ' + (u.company.name || u.username) + ' and ALL its bills? This cannot be undone.')) return;
-  const r = await sb.rpc('admin_delete_user', {uid: id});
-  if (r.error) { toast('Could not delete: ' + r.error.message); return; }
-  toast('Account deleted'); await renderUsers(true);
-}
-async function viewUserBills(id) {
-  const u = usersCache.find(x => x.id === id); if (!u) return;
-  $('#main').innerHTML = '<h2>Bills</h2><div class="empty">Loading…</div>';
-  const r = await sb.from('invoices').select('id,data').eq('user_id', id).order('created_at', {ascending: false});
-  if (r.error) { toast('Could not load: ' + r.error.message); renderUsers(); return; }
-  ubills = r.data.map(x => Object.assign({}, x.data, {id: x.id}));
-  $('#main').innerHTML = `<div class="bar"><h2 style="margin:0">${esc(u.company.name || u.username)}: bills</h2><button class="ghost" onclick="renderUsers()">Back</button></div>
-    <div class="card"><div class="scroll"><table><thead><tr><th>No.</th><th>Date</th><th>Customer</th><th class="num">Total</th><th class="num">Due</th><th></th></tr></thead>
-    <tbody>${ubills.length ? ubills.map((i, k) => `<tr><td>${esc(i.no)}</td><td>${esc(i.date)}</td><td>${esc((i.customer || {}).name)}</td><td class="num">${money((i.totals || {}).total || 0)}</td><td class="num">${money(i.orig ? 0 : dueOf(i))}</td>
-      <td>${i.orig ? '<span class="small" style="color:var(--muted)">Old bill</span>' : `<button class="ghost" onclick="showUBill(${k})">View</button>`}</td></tr>`).join('') : '<tr><td colspan="6" class="empty">No bills yet.</td></tr>'}</tbody></table></div></div>`;
-}
-function showUBill(k) {
-  const inv = ubills[k]; if (!inv) return;
-  printName = String(inv.no).replace(/[^\w.\- ]+/g, '-');
-  $('#sheet').innerHTML = invoiceHTML(inv); $('#viewer').hidden = false;
+function delUser(id) {
+  if (!confirm('Delete this account and ALL its bills? This cannot be undone.')) return;
+  saveUsers(getUsers().filter(x => x.id !== id));
+  try { localStorage.removeItem(KEY + ':' + id); } catch (e) {}
+  renderUsers();
 }
 
 /* ---------- login ---------- */
-async function startSession() {
-  try {
-    const g = await sb.auth.getSession(); const session = g.data && g.data.session;
-    if (!session) return false;
-    const pr = await sb.from('profiles').select('*').eq('id', session.user.id).maybeSingle();
-    if (pr.error) throw pr.error;
-    const p = pr.data;
-    if (!p) { await sb.auth.signOut(); $('#le').textContent = 'This account is not set up. Please contact the Admin.'; return false; }
-    const c = p.company || {};
-    cur = {id: p.id, role: p.role, username: p.username, name: c.name || p.username, phone: c.phone || '', gstin: c.gstin || '', address: c.address || '', logo: c.logo || '', prefix: c.prefix || 'INV-', perms: p.perms || {}};
-    db = await loadAll();
-    draft = newDraft(); imp = null; editP = editC = editB = editU = null; tmpLogo = ''; invQuery = ''; dashSel = ''; tab = ''; usersCache = null; dirty = false;
-    $('#login').hidden = true; $('#lp').value = ''; $('#le').textContent = ''; setStatus('');
-    applyNav(); go(firstTab() || 'dash');
-    return true;
-  } catch (e) {
-    cur = null; db = defaults();
-    $('#le').textContent = 'Could not load your data: ' + (e.message || e);
-    return false;
-  }
+const AUTH = 'billing-auth';
+const ADMIN = {id: 'admin', role: 'admin', name: 'Admin', perms: {}};
+function authed() { try { return sessionStorage.getItem(AUTH) || ''; } catch (e) { return ''; } }
+function startSession(u) {
+  cur = u.id === 'admin' ? ADMIN : Object.assign({}, u, {role: 'user'});
+  try { sessionStorage.setItem(AUTH, cur.id); } catch (e) {}
+  db = load(); draft = newDraft(); imp = null; editP = editC = editB = editU = null; tmpLogo = ''; invQuery = ''; dashSel = ''; tab = '';
+  $('#login').hidden = true; $('#lp').value = ''; $('#le').textContent = '';
+  applyNav(); go(firstTab() || 'dash');
 }
-async function login() {
-  if (!sb) { $('#le').textContent = 'Could not load the online service. Check your internet and refresh.'; return; }
+function login() {
   const n = $('#lu').value.trim(), p = $('#lp').value;
-  if (!n || !p) { $('#le').textContent = 'Enter User ID and password.'; return; }
-  $('#le').textContent = 'Signing in…';
-  const r = await sb.auth.signInWithPassword({email: mail(n), password: p});
-  if (r.error) { $('#le').textContent = /invalid login credentials/i.test(r.error.message || '') ? 'User ID or password is wrong. Try again.' : 'Sign in failed: ' + r.error.message; return; }
-  await startSession();
+  if (n === 'Admin' && p === 'Admin123') { startSession(ADMIN); return; }
+  const u = getUsers().find(x => x.username.toLowerCase() === n.toLowerCase() && x.password === p);
+  if (u) startSession(u); else $('#le').textContent = 'User ID or password is wrong. Try again.';
 }
-async function logout() {
-  try { await flushNow(); } catch (e) {}
-  if (dirty && !confirm('Some changes are not saved online yet. Log out anyway?')) return;
-  try { await sb.auth.signOut(); } catch (e) {}
-  cur = null; db = defaults(); synced.clear(); dirty = false; usersCache = null;
-  closeViewer(); closePay(); $('#choice').hidden = true; $('#main').innerHTML = ''; setStatus('');
-  $('#login').hidden = false; $('#lu').value = ''; $('#lp').value = ''; $('#le').textContent = ''; $('#lu').focus();
+function logout() {
+  try { sessionStorage.removeItem(AUTH); } catch (e) {}
+  cur = null; db = defaults(); closeViewer(); closePay(); $('#choice').hidden = true; $('#main').innerHTML = '';
+  $('#login').hidden = false; $('#lu').value = ''; $('#lu').focus();
 }
-(async function resume() {
-  if (!sb) return;
-  try {
-    const g = await sb.auth.getSession();
-    if (g.data && g.data.session) { $('#le').textContent = 'Loading…'; await startSession(); if (!cur) $('#le').textContent = $('#le').textContent === 'Loading…' ? '' : $('#le').textContent; }
-  } catch (e) { $('#le').textContent = ''; }
+(function resume() {
+  const id = authed(); if (!id) return;
+  const u = id === 'admin' ? ADMIN : getUsers().find(x => x.id === id);
+  if (u) startSession(u); else try { sessionStorage.removeItem(AUTH); } catch (e) {}
 })();
 </script>
 </body>
