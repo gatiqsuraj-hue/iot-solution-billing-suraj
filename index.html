@@ -249,8 +249,8 @@ aside button[hidden]{display:none}
 <script>
 /* ---------- helpers ---------- */
 const KEY = 'billing-app-v1';
-const SB_URL = 'https://udkwlzpkrhxkqjtzggrn.supabase.co';
-const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVka3dsenBrcmh4a3FqdHpnZ3JuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTM0NjUzNTksImV4cCI6MjEwOTA0MTM1OX0.bJFEQ_3QNxIJoibDep5DrusgKsQGTyooQuOxaj86oWQ';
+const SB_URL = 'https://pymxqexyhighgslzrqze.supabase.co';
+const SB_KEY = 'sb_publishable_LRypHFBar9BfTSgSk_GWHQ_XEY1Prpy';
 const sb = window.supabase ? window.supabase.createClient(SB_URL, SB_KEY) : null;
 const mail = u => String(u).trim().toLowerCase() + '@billing.example.com';
 let cur = null; // logged-in account
@@ -1423,7 +1423,7 @@ async function login() {
   if (!n || !p) { $('#le').textContent = 'Enter User ID and password.'; return; }
   $('#le').textContent = 'Signing in…';
   const r = await sb.auth.signInWithPassword({email: mail(n), password: p});
-  if (r.error) { $('#le').textContent = /invalid|credentials/i.test(r.error.message || '') ? 'User ID or password is wrong. Try again.' : 'Sign in failed: ' + r.error.message; return; }
+  if (r.error) { $('#le').textContent = /invalid login credentials/i.test(r.error.message || '') ? 'User ID or password is wrong. Try again.' : 'Sign in failed: ' + r.error.message; return; }
   await startSession();
 }
 async function logout() {
