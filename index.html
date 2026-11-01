@@ -205,7 +205,17 @@ aside button[hidden]{display:none}
 .ivt.click{cursor:pointer}
 .ivt.click:hover,.ivt.click:focus-visible{box-shadow:0 2px 8px rgba(22,32,46,.2)}
 .qneg{color:var(--danger);font-weight:700}
+#sync{margin:14px 8px 0;font-size:12px;color:#8fa3b8;display:flex;align-items:center;gap:6px}
+#sync::before{content:"";width:8px;height:8px;border-radius:50%;background:#2fb67c;flex-shrink:0}
+#sync.busy::before{background:#f2a93b}
+#sync.bad::before{background:#e5484d}
+#sync.bad{color:#ffb4b0}
+#viewbar{margin:0 4px 12px;padding:8px 10px;border-radius:6px;background:#7a4b00;color:#fff;font-size:12px}
+#viewbar button{margin-top:6px;background:#fff;color:#7a4b00;text-align:center;font-weight:600;padding:6px}
+#viewbar button:hover{background:#ffe9c7;color:#7a4b00}
+.lgo:disabled{opacity:.6;cursor:wait}
 </style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.58.0/dist/umd/supabase.js"></script>
 </head>
 <body>
 <div id="login">
@@ -234,6 +244,7 @@ aside button[hidden]{display:none}
 <div class="app">
   <aside>
     <h1 id="brand">Billing</h1>
+    <div id="viewbar" hidden></div>
     <button data-tab="dash">Dashboard</button>
     <button data-tab="new">New invoice</button>
     <button data-tab="invoices">Invoices</button>
@@ -244,6 +255,7 @@ aside button[hidden]{display:none}
     <button data-tab="settings">Settings</button>
     <button data-tab="users">Create account</button>
     <button class="out" onclick="logout()">Log out</button>
+    <div id="sync" class="ok"></div>
   </aside>
   <main id="main"></main>
 </div>
@@ -263,7 +275,7 @@ aside button[hidden]{display:none}
 /* ---------- helpers ---------- */
 const KEY = 'billing-app-v1';
 let cur = null; // logged-in account
-const dataKey = () => (cur && cur.role === 'user') ? KEY + ':' + cur.id : KEY;
+let acct = null; // account whose data is open (same as cur, or a client when Admin is viewing)
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const money = n => '₹' + (Number(n) || 0).toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
@@ -280,14 +292,13 @@ function defaults() {
     businesses: [], defaultBiz: '', products: [], customers: [], invoices: [], inventory: defInv()
   };
 }
-function load() {
-  let d = {};
-  try { const raw = localStorage.getItem(dataKey()); if (raw) d = JSON.parse(raw) || {}; } catch (e) { /* storage empty or blocked */ }
+function build(d) {
+  d = d || {};
   const base = defaults(), o = d.settings || {};
   const r = {settings: Object.assign(base.settings, {prefix: o.prefix, nextNo: o.nextNo, note: o.note}), businesses: d.businesses || [], defaultBiz: d.defaultBiz || '', products: d.products || [], customers: d.customers || [], invoices: d.invoices || [], inventory: fixInv(d.inventory)};
-  if (cur && cur.role === 'user') { // company details are fixed by Admin
-    if (!d.settings) r.settings.prefix = cur.prefix || 'INV-';
-    r.businesses = [{id: 'co-' + cur.id, name: cur.name, address: cur.address || '', phone: cur.phone || '', gstin: cur.gstin || '', logo: cur.logo || ''}];
+  if (acct && acct.role === 'user') { // company details are fixed by Admin
+    if (!d.settings) r.settings.prefix = acct.prefix || 'INV-';
+    r.businesses = [{id: 'co-' + acct.id, name: acct.name, address: acct.address || '', phone: acct.phone || '', gstin: acct.gstin || '', logo: acct.logo || ''}];
     r.defaultBiz = r.businesses[0].id;
   }
   if (r.settings.prefix == null) r.settings.prefix = 'INV-';
@@ -302,11 +313,109 @@ function load() {
 const defBiz = () => db.businesses.find(b => b.id === db.defaultBiz) || db.businesses[0];
 const bizSnap = id => { const b = db.businesses.find(x => x.id === id) || defBiz(); return {name: b.name, address: b.address, phone: b.phone, gstin: b.gstin, logo: b.logo || ''}; };
 let db = defaults();
-function save() {
-  if (!cur) return false;
-  try { localStorage.setItem(dataKey(), JSON.stringify(db)); return true; }
-  catch (e) { toast('Could not save. Browser storage is full or blocked. Download a backup and delete some old bills.'); return false; }
+
+/* ---------- Supabase (login + online data) ---------- */
+const SB_URL = 'https://pymxqexyhighgslzrqze.supabase.co';
+const SB_KEY = 'sb_publishable_LRypHFBar9BfTSgSk_GWHQ_XEY1Prpy'; // public key: safe to keep in this file
+const MAIL = '@iotbilling.app'; // User ID becomes user@iotbilling.app behind the scenes
+const sb = window.supabase ? window.supabase.createClient(SB_URL, SB_KEY) : null;
+const toEmail = n => String(n).trim().toLowerCase() + MAIL;
+const errMsg = e => /already registered|already exists/i.test((e && e.message) || '') ? 'This User ID already exists.' : ((e && e.message) || 'Something went wrong.');
+
+let remote = {core: {}, invoices: []}, sent = {core: '', inv: {}};
+let dirty = false, syncing = false, syncTimer = null, syncFail = 0, lastPull = 0;
+const idTime = id => parseInt(String(id).slice(0, -4), 36) || 0;
+const coreOf = x => ({settings: x.settings, businesses: x.businesses, defaultBiz: x.defaultBiz, products: x.products, customers: x.customers, inventory: x.inventory});
+function load() { return build(Object.assign({}, remote.core, {invoices: remote.invoices})); }
+function setSync(cls, msg) { const el = $('#sync'); if (el) { el.className = cls; el.textContent = msg; } }
+function chunkRows(items) { // split rows so one request is not too big
+  const out = []; let g = [], size = 0;
+  items.forEach(x => {
+    if (g.length && (size + x.n > 1500000 || g.length >= 50)) { out.push(g); g = []; size = 0; }
+    g.push(x.row); size += x.n;
+  });
+  if (g.length) out.push(g);
+  return out;
 }
+async function fetchAll(owner) {
+  const c = await sb.from('ib_docs').select('data').eq('owner', owner).eq('kind', 'core').maybeSingle();
+  if (c.error) throw c.error;
+  const rows = [];
+  for (let from = 0; ; from += 40) {
+    const r = await sb.from('ib_invoices').select('id,data').eq('owner', owner).order('id').range(from, from + 39);
+    if (r.error) throw r.error;
+    rows.push(...r.data);
+    if (r.data.length < 40) break;
+  }
+  rows.sort((x, y) => idTime(y.id) - idTime(x.id));
+  return {hadCore: !!c.data, core: (c.data && c.data.data) || {}, invoices: rows.map(r => r.data)};
+}
+function applyRemote(r) { // call after fetchAll, then set acct and db = load()
+  remote = {core: r.core, invoices: r.invoices};
+  sent = {core: '', inv: {}};
+  r.invoices.forEach(i => { sent.inv[i.id] = JSON.stringify(i); });
+  sent.hadCore = r.hadCore; lastPull = Date.now();
+}
+function afterLoad() { // db is ready: remember what the server already has
+  sent.core = sent.hadCore ? JSON.stringify(coreOf(db)) : '';
+  dirty = false; syncFail = 0; setSync('ok', 'All changes saved');
+  if (!sent.hadCore) save();
+}
+function save() {
+  if (!cur || !acct) return false;
+  dirty = true; setSync('busy', 'Saving…');
+  clearTimeout(syncTimer); syncTimer = setTimeout(doSync, 500);
+  return true;
+}
+async function doSync() {
+  if (syncing || !dirty || !acct) return;
+  syncing = true; dirty = false;
+  const owner = acct.id;
+  try {
+    const coreStr = JSON.stringify(coreOf(db));
+    if (coreStr !== sent.core) {
+      const r = await sb.from('ib_docs').upsert({owner, kind: 'core', data: JSON.parse(coreStr), updated_at: new Date().toISOString()}, {onConflict: 'owner,kind'});
+      if (r.error) throw r.error;
+      sent.core = coreStr;
+    }
+    const now = {}, changed = [];
+    db.invoices.forEach(i => { const t = JSON.stringify(i); now[i.id] = t; if (sent.inv[i.id] !== t) changed.push({row: {owner, id: i.id, data: i, updated_at: new Date().toISOString()}, n: t.length}); });
+    for (const g of chunkRows(changed)) {
+      const r = await sb.from('ib_invoices').upsert(g, {onConflict: 'owner,id'});
+      if (r.error) throw r.error;
+      g.forEach(x => { sent.inv[x.id] = now[x.id]; });
+    }
+    const gone = Object.keys(sent.inv).filter(id => !(id in now));
+    for (let k = 0; k < gone.length; k += 100) {
+      const part = gone.slice(k, k + 100);
+      const r = await sb.from('ib_invoices').delete().eq('owner', owner).in('id', part);
+      if (r.error) throw r.error;
+      part.forEach(id => { delete sent.inv[id]; });
+    }
+    syncFail = 0;
+    setSync(dirty ? 'busy' : 'ok', dirty ? 'Saving…' : 'All changes saved');
+  } catch (e) {
+    console.error(e); dirty = true; syncFail++;
+    setSync('bad', 'Not saved. Retrying…');
+    if (syncFail === 1) toast('Could not save online. Check your internet; it will retry. Do not close this page.');
+  } finally { syncing = false; }
+  if (dirty) { clearTimeout(syncTimer); syncTimer = setTimeout(doSync, syncFail ? 4000 : 300); }
+}
+async function flush() {
+  clearTimeout(syncTimer);
+  for (let k = 0; k < 40 && (dirty || syncing) && syncFail < 2; k++) { if (!syncing) await doSync(); else await new Promise(r => setTimeout(r, 150)); }
+  return !dirty && !syncing;
+}
+window.addEventListener('beforeunload', e => { if (dirty || syncing) { e.preventDefault(); e.returnValue = ''; } });
+document.addEventListener('visibilitychange', async () => { // pick up changes made on another device
+  if (document.hidden || !cur || !acct || dirty || syncing || !$('#viewer').hidden || !$('#pay').hidden || Date.now() - lastPull < 30000) return;
+  try {
+    const r = await fetchAll(acct.id);
+    if (dirty || syncing || !cur) return;
+    applyRemote(r); db = load(); sent.core = r.hadCore ? JSON.stringify(coreOf(db)) : '';
+    if (['dash', 'invoices', 'old', 'inv'].includes(tab) && !invView) go(tab);
+  } catch (e) { /* try again next time */ }
+});
 let toastTimer;
 function toast(msg) {
   const t = $('#toast'); t.textContent = msg; t.classList.add('show');
@@ -640,7 +749,7 @@ function renderSettings() {
   const s = db.settings, b = db.businesses.find(x => x.id === editB) || {name: '', phone: '', gstin: '', address: ''};
   $('#main').innerHTML = `
     <h2>Settings</h2>
-    ${cur.role === 'admin' ? `    <div class="card"><h3>Business details (shown on invoices)</h3>
+    ${acct.role === 'admin' ? `    <div class="card"><h3>Business details (shown on invoices)</h3>
       <p style="margin-top:0;color:var(--muted)">Add every business or GST number you bill from. You pick one on each invoice.</p>
       <h3 style="font-size:14px">${editB ? 'Edit business' : 'Add business'}</h3>
       <div class="grid">
@@ -673,7 +782,7 @@ function renderSettings() {
       <div style="margin-top:12px"><label for="sf">Default note at the bottom of invoices</label><textarea id="sf" rows="2">${esc(s.note)}</textarea></div>
       <div style="margin-top:12px"><button class="btn" onclick="saveSettings()">Save settings</button></div></div>
     <div class="card"><h3>Backup</h3>
-      <p style="margin-top:0;color:var(--muted)">Data is stored in this browser only. Download a backup regularly, and use Restore to load it on another computer.</p>
+      <p style="margin-top:0;color:var(--muted)">Your data is saved online and opens on any device after login. Still, download a backup now and then for safety.</p>
       <div class="row-actions">
         <button class="ghost" onclick="exportData()">Download backup</button>
         <button class="ghost" onclick="$('#imp').click()">Restore from backup</button>
@@ -732,8 +841,8 @@ function importData(file) {
     try {
       const d = JSON.parse(r.result);
       if (!d || !Array.isArray(d.invoices) || !Array.isArray(d.products) || !Array.isArray(d.customers)) throw new Error('bad file');
-      if (!confirm('This replaces the data currently in this browser. Continue?')) return;
-      localStorage.setItem(dataKey(), JSON.stringify(d)); db = load();
+      if (!confirm('This replaces the data currently in this account. Continue?')) return;
+      db = build(d); draft = newDraft();
       save(); toast('Backup restored'); go('settings');
     } catch (e) { toast('This file is not a valid backup.'); }
   };
@@ -741,9 +850,9 @@ function importData(file) {
 }
 function wipe() {
   if (!can('delete')) return;
-  if (!confirm('Delete ALL products, customers and invoices from this browser?')) return;
+  if (!confirm('Delete ALL products, customers and invoices of this account?')) return;
   if (!confirm('Last check: this cannot be undone. Delete everything?')) return;
-  localStorage.removeItem(dataKey()); db = load(); save(); draft = newDraft(); go('settings');
+  db = build({}); save(); draft = newDraft(); go('settings');
 }
 
 /* ---------- inventory ---------- */
@@ -1508,25 +1617,42 @@ function delOld(id) {
 }
 
 /* ---------- create account (Admin only) ---------- */
-const USERS_KEY = 'billing-users-v1';
+const USERS_KEY = 'billing-users-v1'; // old browser-only accounts (used for moving data)
 const PERMS = [['dash', 'Dashboard'], ['new', 'Create new invoice'], ['invoices', 'View invoices'], ['old', 'Old invoices (upload)'], ['products', 'Products'], ['customers', 'Customers'], ['settings', 'Settings (numbering, backup)'], ['payment', 'Record payments'], ['inv', 'Inventory (items, stock entry, upload)'], ['delete', 'Delete bills and records']];
 const DEF_PERMS = ['dash', 'new', 'invoices', 'products', 'inv', 'customers', 'payment'];
-function getUsers() { try { return JSON.parse(localStorage.getItem(USERS_KEY)) || []; } catch (e) { return []; } }
-function saveUsers(u) { try { localStorage.setItem(USERS_KEY, JSON.stringify(u)); return true; } catch (e) { toast('Could not save. Browser storage is full or blocked.'); return false; } }
-function billCount(id) { try { return (JSON.parse(localStorage.getItem(KEY + ':' + id) || '{}').invoices || []).length; } catch (e) { return 0; } }
-let editU = null;
-function renderUsers() {
-  const users = getUsers();
+let usersCache = [], usersLoaded = false, billCounts = {}, editU = null;
+async function loadUsers() {
+  const r = await sb.from('ib_profiles').select('*').eq('role', 'user').order('created_at');
+  if (r.error) throw r.error;
+  usersCache = r.data;
+  const c = await sb.rpc('ib_bill_counts'); billCounts = {};
+  if (!c.error) (c.data || []).forEach(x => { billCounts[x.owner] = Number(x.n); });
+  usersLoaded = true;
+}
+const oldUsers = () => { try { return JSON.parse(localStorage.getItem(USERS_KEY)) || []; } catch (e) { return []; } };
+const oldData = key => { try { const r = localStorage.getItem(key); return r ? JSON.parse(r) : null; } catch (e) { return null; } };
+const oldBills = d => d && Array.isArray(d.invoices) ? d.invoices.length : 0;
+const viewing = () => !!cur && !!acct && cur.id !== acct.id;
+async function renderUsers() {
+  if (!usersLoaded) {
+    $('#main').innerHTML = '<div class="empty">Loading accounts…</div>';
+    try { await loadUsers(); }
+    catch (e) { $('#main').innerHTML = '<div class="warn">Could not load accounts. Has the SQL been run in Supabase? ' + esc(e.message || '') + '</div>'; return; }
+    if (tab !== 'users') return;
+  }
+  const users = usersCache;
   const u = users.find(x => x.id === editU) || {username: '', name: '', phone: '', gstin: '', address: '', prefix: 'INV-', perms: Object.fromEntries(DEF_PERMS.map(k => [k, true]))};
   const pm = u.perms || {};
+  const oAdmin = oldData(KEY), oUsers = oldUsers();
+  const hasOld = !viewing() && ((oAdmin && (oldBills(oAdmin) || (oAdmin.products || []).length || (oAdmin.customers || []).length)) || oUsers.length);
   $('#main').innerHTML = `
     <h2>Create account</h2>
     <div class="card"><h3>${editU ? 'Edit account' : 'New account'}</h3>
-      <p style="margin-top:0;color:var(--muted)">Fill the company details here once. This user can only bill for this company. They cannot see or change company name, GSTIN or logo, and they never see other users' bills.</p>
+      <p style="margin-top:0;color:var(--muted)">Fill the company details here once. This user can only bill for this company. They cannot see or change company name, GSTIN or logo, and they never see other users' bills. Accounts are online: the user can log in from any computer or phone.</p>
       <div class="sec" style="margin-top:0">Login</div>
       <div class="grid">
-        <div><label for="uu">User ID</label><input id="uu" autocomplete="off" value="${esc(u.username)}"></div>
-        <div><label for="up">Password</label><input id="up" autocomplete="off" placeholder="${editU ? 'Leave blank to keep the same' : 'At least 4 characters'}"></div>
+        <div><label for="uu">User ID</label><input id="uu" autocomplete="off" value="${esc(u.username)}" ${editU ? 'disabled' : 'placeholder="letters and numbers, no spaces"'}></div>
+        <div><label for="up">Password</label><input id="up" autocomplete="off" placeholder="${editU ? 'Leave blank to keep the same' : 'At least 6 characters'}"></div>
       </div>
       <div class="sec">Company details (shown on this user's invoices)</div>
       <div class="grid">
@@ -1541,7 +1667,7 @@ function renderUsers() {
       <div class="sec">Rights (what this user can do)</div>
       <div class="perms">${PERMS.map(([k, l]) => `<label><input type="checkbox" id="pm-${k}" ${pm[k] ? 'checked' : ''}>${l}</label>`).join('')}</div>
       <div class="row-actions" style="margin-top:16px">
-        <button class="btn" onclick="saveUser()">${editU ? 'Update account' : 'Create account'}</button>
+        <button class="btn" id="usave" onclick="saveUser()">${editU ? 'Update account' : 'Create account'}</button>
         ${editU ? '<button class="ghost" onclick="editU = null; tmpLogo = \'\'; renderUsers()">Cancel</button>' : ''}
         ${tmpLogo ? '<button class="ghost" onclick="tmpLogo = \'\'; $(\'#lgp\').hidden = true">Remove logo</button>' : ''}
       </div>
@@ -1552,60 +1678,161 @@ function renderUsers() {
         <td>${x.logo ? `<img class="logo-thumb" src="${x.logo}" alt="">` : ''}</td>
         <td>${esc(x.name)}<div class="small" style="color:var(--muted)">${esc(x.gstin)}</div></td><td>${esc(x.username)}</td>
         <td class="rt">${PERMS.filter(([k]) => (x.perms || {})[k]).map(p => p[1]).join(', ') || 'None'}</td>
-        <td class="num">${billCount(x.id)}</td>
-        <td><div class="row-actions"><button class="ghost" onclick="editU = '${x.id}'; tmpLogo = getUsers().find(y => y.id === '${x.id}').logo || ''; renderUsers(); window.scrollTo(0, 0)">Edit</button>
+        <td class="num">${billCounts[x.id] || 0}</td>
+        <td><div class="row-actions"><button class="ghost" onclick="viewAs('${x.id}')">Open data</button><button class="ghost" onclick="editU = '${x.id}'; tmpLogo = usersCache.find(y => y.id === '${x.id}').logo || ''; renderUsers(); window.scrollTo(0, 0)">Edit</button>
         <button class="ghost danger" onclick="delUser('${x.id}')">Delete</button></div></td></tr>`).join('')
-        : '<tr><td colspan="6" class="empty">No accounts yet. Create the first one above.</td></tr>'}</tbody></table></div></div>`;
+        : '<tr><td colspan="6" class="empty">No accounts yet. Create the first one above.</td></tr>'}</tbody></table></div></div>
+    ${hasOld ? `<div class="card"><h3>Old data found in this browser</h3>
+      <p style="margin-top:0;color:var(--muted)">Data saved earlier in this browser can be moved to Supabase in one click. After that it opens on every device.</p>
+      ${oAdmin && (oldBills(oAdmin) || (oAdmin.products || []).length || (oAdmin.customers || []).length) ? `<div class="row-actions" style="margin-bottom:12px"><button class="btn" onclick="moveAdmin()">Move Admin data (${oldBills(oAdmin)} bills)</button></div>` : ''}
+      ${oUsers.length ? `<div class="scroll"><table><thead><tr><th>Company</th><th>User ID</th><th class="num">Bills</th><th>Online</th><th></th></tr></thead><tbody>${oUsers.map(x => `<tr><td>${esc(x.name)}</td><td>${esc(x.username)}</td><td class="num">${oldBills(oldData(KEY + ':' + x.id))}</td><td>${users.some(y => y.username.toLowerCase() === String(x.username).toLowerCase()) ? 'Account exists' : 'Not created'}</td><td><button class="ghost" onclick="moveOld('${x.id}')">Move to Supabase</button></td></tr>`).join('')}</tbody></table></div>` : ''}
+    </div>` : ''}`;
 }
-function saveUser() {
+async function createAccount(username, pw, f) {
+  const tmp = window.supabase.createClient(SB_URL, SB_KEY, {auth: {persistSession: false, autoRefreshToken: false, detectSessionInUrl: false, storageKey: 'ib-tmp'}});
+  const r = await tmp.auth.signUp({email: toEmail(username), password: pw});
+  if (r.error) throw r.error;
+  const u = r.data.user;
+  if (!u || (u.identities && !u.identities.length)) throw new Error('This User ID already exists.');
+  if (!r.data.session) await sb.rpc('ib_admin_confirm_user', {target: u.id});
+  const ins = await sb.from('ib_profiles').insert(Object.assign({id: u.id, username, role: 'user'}, f));
+  if (ins.error) { await sb.rpc('ib_admin_delete_user', {target: u.id}); throw ins.error; }
+  return u.id;
+}
+async function saveUser() {
   const username = $('#uu').value.trim(), pw = $('#up').value, name = $('#un').value.trim();
-  if (!username) { toast('Enter a User ID.'); return; }
-  if (username.toLowerCase() === 'admin') { toast('This User ID is reserved.'); return; }
-  const users = getUsers();
-  if (users.some(x => x.id !== editU && x.username.toLowerCase() === username.toLowerCase())) { toast('This User ID already exists.'); return; }
-  if ((!editU || pw) && pw.length < 4) { toast('Password must be at least 4 characters.'); return; }
+  if (!editU) {
+    if (!/^[A-Za-z0-9._-]{2,30}$/.test(username)) { toast('User ID: 2 to 30 letters, numbers, dot, dash or underscore. No spaces.'); return; }
+    if (username.toLowerCase() === 'admin') { toast('This User ID is reserved.'); return; }
+    if (usersCache.some(x => x.username.toLowerCase() === username.toLowerCase())) { toast('This User ID already exists.'); return; }
+  }
+  if ((!editU || pw) && pw.length < 6) { toast('Password must be at least 6 characters.'); return; }
   if (!name) { toast('Enter the company name.'); return; }
   const perms = {}; PERMS.forEach(([k]) => perms[k] = $('#pm-' + k).checked);
   if (!Object.values(perms).some(Boolean)) { toast('Give at least one right.'); return; }
-  const data = {username, name, phone: $('#uph').value.trim(), gstin: $('#ug').value.trim().toUpperCase(), address: $('#ua').value.trim(), logo: tmpLogo, perms};
-  if (editU) { const x = users.find(y => y.id === editU); Object.assign(x, data); if (pw) x.password = pw; }
-  else users.push(Object.assign({id: uid(), password: pw, prefix: ($('#ux').value || 'INV-')}, data));
-  if (!saveUsers(users)) return;
-  editU = null; tmpLogo = ''; toast('Account saved'); renderUsers();
+  const data = {name, phone: $('#uph').value.trim(), gstin: $('#ug').value.trim().toUpperCase(), address: $('#ua').value.trim(), logo: tmpLogo, perms};
+  const btn = $('#usave'); btn.disabled = true;
+  try {
+    if (editU) {
+      const r = await sb.from('ib_profiles').update(data).eq('id', editU); if (r.error) throw r.error;
+      if (pw) { const p = await sb.rpc('ib_admin_set_password', {target: editU, new_password: pw}); if (p.error) throw p.error; }
+    } else await createAccount(username, pw, Object.assign({prefix: $('#ux').value || 'INV-'}, data));
+  } catch (e) { btn.disabled = false; toast(errMsg(e)); return; }
+  editU = null; tmpLogo = ''; usersLoaded = false; toast('Account saved'); renderUsers();
 }
-function delUser(id) {
+async function delUser(id) {
   if (!confirm('Delete this account and ALL its bills? This cannot be undone.')) return;
-  saveUsers(getUsers().filter(x => x.id !== id));
-  try { localStorage.removeItem(KEY + ':' + id); } catch (e) {}
-  renderUsers();
+  const r = await sb.rpc('ib_admin_delete_user', {target: id});
+  if (r.error) { toast(errMsg(r.error)); return; }
+  usersLoaded = false; renderUsers();
+}
+
+/* ---- Admin: open a client's data ---- */
+function resetState() { draft = newDraft(); imp = null; editP = editC = editB = editU = null; tmpLogo = ''; invQuery = ''; dashSel = ''; tab = ''; invView = ''; imeiQ = ''; imeiF = ''; }
+function drawViewBar() {
+  const el = $('#viewbar');
+  if (viewing()) { el.hidden = false; el.innerHTML = `Viewing: <b>${esc(acct.name)}</b> (${esc(acct.username)})<button onclick="exitView()">Back to Admin</button>`; }
+  else { el.hidden = true; el.innerHTML = ''; }
+}
+async function switchTo(p) {
+  await flush();
+  const r = await fetchAll(p.id);
+  applyRemote(r); acct = p; db = load(); resetState(); afterLoad(); drawViewBar(); applyNav();
+}
+async function viewAs(id) {
+  const p = usersCache.find(x => x.id === id); if (!p || cur.role !== 'admin') return;
+  try { await switchTo(Object.assign({}, p)); go('dash'); } catch (e) { console.error(e); toast('Could not open this account.'); }
+}
+async function exitView() {
+  try { await switchTo(cur); go('users'); } catch (e) { console.error(e); toast('Could not go back. Please refresh.'); }
+}
+
+/* ---- Admin: move old browser data to Supabase ---- */
+async function pushAll(owner, d) {
+  const core = {settings: d.settings, businesses: d.businesses || [], defaultBiz: d.defaultBiz || '', products: d.products || [], customers: d.customers || [], inventory: fixInv(d.inventory)};
+  let r = await sb.from('ib_docs').upsert({owner, kind: 'core', data: core, updated_at: new Date().toISOString()}, {onConflict: 'owner,kind'});
+  if (r.error) throw r.error;
+  r = await sb.from('ib_invoices').delete().eq('owner', owner);
+  if (r.error) throw r.error;
+  const items = (d.invoices || []).map(i => ({row: {owner, id: i.id, data: i}, n: JSON.stringify(i).length}));
+  for (const g of chunkRows(items)) { const x = await sb.from('ib_invoices').insert(g); if (x.error) throw x.error; }
+}
+async function moveAdmin() {
+  const d = oldData(KEY); if (!d) return;
+  if (!confirm('Move the Admin data from this browser to Supabase?\nThis REPLACES the Admin data already online.')) return;
+  try { await flush(); await pushAll(cur.id, d); await switchTo(cur); toast('Admin data moved to Supabase'); go('users'); }
+  catch (e) { console.error(e); toast('Could not move data: ' + errMsg(e)); }
+}
+async function moveOld(oldId) {
+  const u = oldUsers().find(x => x.id === oldId); if (!u) return;
+  const d = oldData(KEY + ':' + oldId) || {};
+  try {
+    let t = usersCache.find(x => x.username.toLowerCase() === String(u.username).toLowerCase()), id;
+    if (t) { if (!confirm('Account ' + u.username + ' already exists online.\nThis REPLACES its online data with the data from this browser. Continue?')) return; id = t.id; }
+    else {
+      let pw = u.password;
+      if (!pw || pw.length < 6) { pw = prompt('Supabase needs a password of at least 6 characters for ' + u.username + '. Enter a new password:') || ''; if (pw.length < 6) { toast('Cancelled. Password too short.'); return; } }
+      if (!/^[A-Za-z0-9._-]{2,30}$/.test(u.username)) { toast('User ID "' + u.username + '" has spaces or special characters. Create this account manually with a new User ID, then use Move again.'); return; }
+      id = await createAccount(u.username, pw, {name: u.name || '', phone: u.phone || '', gstin: u.gstin || '', address: u.address || '', logo: u.logo || '', prefix: u.prefix || 'INV-', perms: u.perms || {}});
+    }
+    await pushAll(id, d);
+    usersLoaded = false; toast('Moved ' + u.username + ' to Supabase'); renderUsers();
+  } catch (e) { console.error(e); toast('Could not move data: ' + errMsg(e)); usersLoaded = false; }
 }
 
 /* ---------- login ---------- */
-const AUTH = 'billing-auth';
-const ADMIN = {id: 'admin', role: 'admin', name: 'Admin', perms: {}};
-function authed() { try { return sessionStorage.getItem(AUTH) || ''; } catch (e) { return ''; } }
-function startSession(u) {
-  cur = u.id === 'admin' ? ADMIN : Object.assign({}, u, {role: 'user'});
-  try { sessionStorage.setItem(AUTH, cur.id); } catch (e) {}
-  db = load(); draft = newDraft(); imp = null; editP = editC = editB = editU = null; tmpLogo = ''; invQuery = ''; dashSel = ''; tab = ''; invView = ''; imeiQ = ''; imeiF = '';
+async function getProfile(id) {
+  const r = await sb.from('ib_profiles').select('*').eq('id', id).maybeSingle();
+  if (r.error) throw r.error;
+  return r.data;
+}
+async function startSession(p) {
+  try { applyRemote(await fetchAll(p.id)); }
+  catch (e) { console.error(e); $('#le').textContent = 'Could not load your data. Check the internet and try again.'; return false; }
+  cur = p; acct = p; usersLoaded = false;
+  db = load(); resetState(); afterLoad(); drawViewBar();
   $('#login').hidden = true; $('#lp').value = ''; $('#le').textContent = '';
   applyNav(); go(firstTab() || 'dash');
+  return true;
 }
-function login() {
+async function login() {
+  const err = m => { $('#le').textContent = m; };
+  if (!sb) { err('Could not load the login service. Check the internet and refresh the page.'); return; }
   const n = $('#lu').value.trim(), p = $('#lp').value;
-  if (n === 'Admin' && p === 'Admin123') { startSession(ADMIN); return; }
-  const u = getUsers().find(x => x.username.toLowerCase() === n.toLowerCase() && x.password === p);
-  if (u) startSession(u); else $('#le').textContent = 'User ID or password is wrong. Try again.';
+  if (!n || !p) { err('Enter your User ID and password.'); return; }
+  const btn = document.querySelector('#login .lgo'); btn.disabled = true; err('Signing in…');
+  try {
+    const r = await sb.auth.signInWithPassword({email: toEmail(n), password: p});
+    if (r.error) { err(/invalid|credentials/i.test(r.error.message) ? 'User ID or password is wrong. Try again.' : r.error.message); return; }
+    const prof = await getProfile(r.data.user.id);
+    if (!prof) { await sb.auth.signOut(); err('This account is not set up yet. Please ask the Admin.'); return; }
+    err('Opening your account…');
+    await startSession(prof);
+  } catch (e) { console.error(e); err('Could not sign in. Check the internet and try again.'); }
+  finally { btn.disabled = false; }
 }
-function logout() {
-  try { sessionStorage.removeItem(AUTH); } catch (e) {}
-  cur = null; db = defaults(); closeViewer(); closePay(); $('#choice').hidden = true; $('#main').innerHTML = '';
-  $('#login').hidden = false; $('#lu').value = ''; $('#lu').focus();
+function endSession() {
+  clearTimeout(syncTimer); dirty = false; syncing = false;
+  cur = null; acct = null; db = defaults(); remote = {core: {}, invoices: []}; sent = {core: '', inv: {}};
+  closeViewer(); closePay(); $('#choice').hidden = true; $('#main').innerHTML = ''; $('#viewbar').hidden = true;
+  $('#login').hidden = false; $('#lu').value = ''; $('#lp').value = ''; $('#le').textContent = '';
 }
-(function resume() {
-  const id = authed(); if (!id) return;
-  const u = id === 'admin' ? ADMIN : getUsers().find(x => x.id === id);
-  if (u) startSession(u); else try { sessionStorage.removeItem(AUTH); } catch (e) {}
+async function logout() {
+  if (!(await flush()) && !confirm('Your last changes are not saved online yet. Log out anyway?')) return;
+  const was = cur; cur = null;
+  try { await sb.auth.signOut(); } catch (e) {}
+  cur = was; endSession();
+  $('#lu').focus();
+}
+if (sb) sb.auth.onAuthStateChange(ev => { if (ev === 'SIGNED_OUT' && cur) endSession(); });
+(async function resume() {
+  if (!sb) { $('#le').textContent = 'Could not load the login service. Check the internet and refresh the page.'; return; }
+  try {
+    const s = await sb.auth.getSession(); if (!s.data.session) return;
+    $('#le').textContent = 'Opening your account…';
+    const prof = await getProfile(s.data.session.user.id);
+    if (prof) await startSession(prof); else { $('#le').textContent = ''; await sb.auth.signOut(); }
+  } catch (e) { console.error(e); $('#le').textContent = 'Could not open your account. Please sign in again.'; }
 })();
 </script>
 </body>
