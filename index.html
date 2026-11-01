@@ -453,7 +453,7 @@ function go(t) {
   $('#brand').textContent = defBiz().name || 'Billing';
   window.scrollTo(0, 0);
 }
-document.querySelectorAll('aside button[data-tab]').forEach(b => b.onclick = () => { invView = ''; go(b.dataset.tab); });
+document.querySelectorAll('aside button[data-tab]').forEach(b => b.onclick = () => { invView = ''; custBack = false; go(b.dataset.tab); });
 
 /* ---------- new invoice ---------- */
 let draft = newDraft();
@@ -488,10 +488,11 @@ function renderNew() {
         <div><label for="bz">Business (GST)</label>
           <select id="bz" onchange="draft.bizId = this.value">${db.businesses.map(b => `<option value="${b.id}" ${b.id === d.bizId ? 'selected' : ''}>${esc(b.name)}${b.gstin ? ' — ' + esc(b.gstin) : ''}</option>`).join('')}</select></div>
         <div><label for="cust">Customer</label>
-          <select id="cust" onchange="draft.customerId = this.value">
+          <select id="cust" onchange="draft.customerId = this.value; renderNew()">
             <option value="">Walk-in customer</option>
             ${db.customers.map(c => `<option value="${c.id}" ${c.id === d.customerId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
-          </select></div>
+          </select>
+          ${can('customers') ? `<div class="row-actions" style="margin-top:6px"><button class="ghost" onclick="addCustFromInvoice()">+ Add customer</button>${d.customerId && db.customers.some(c => c.id === d.customerId) ? `<button class="ghost" onclick="editCustFromInvoice('${d.customerId}')">Edit</button>${can('delete') ? `<button class="ghost danger" onclick="delCustomer('${d.customerId}')">Delete</button>` : ''}` : ''}</div>` : ''}</div>
         <div><label for="dt">Date</label><input id="dt" type="date" value="${esc(d.date)}" onchange="draft.date = this.value"></div>
         <div><label for="ds">Discount (%)</label><input id="ds" type="number" min="0" max="100" step="any" value="${esc(d.discount)}" oninput="draft.discount = this.value; updateTotals()"></div>
       </div>
@@ -705,7 +706,7 @@ function delProduct(id) {
 }
 
 /* ---------- customers ---------- */
-let editC = null;
+let editC = null, custBack = false;
 function renderCustomers() {
   const c = db.customers.find(x => x.id === editC) || {name: '', phone: '', address: '', gstin: ''};
   $('#main').innerHTML = `
@@ -719,28 +720,28 @@ function renderCustomers() {
       </div>
       <div style="margin-top:12px" class="row-actions">
         <button class="btn" onclick="saveCustomer()">${editC ? 'Update customer' : 'Add customer'}</button>
-        ${editC ? '<button class="ghost" onclick="editC = null; renderCustomers()">Cancel</button>' : ''}
+        ${editC || custBack ? '<button class="ghost" onclick="cancelCust()">Cancel</button>' : ''}
       </div></div>
-    <div class="card"><div class="scroll"><table>
-      <thead><tr><th>Name</th><th>Phone</th><th>Address</th><th></th></tr></thead>
-      <tbody>${db.customers.length ? db.customers.map(x => `
-        <tr><td>${esc(x.name)}</td><td>${esc(x.phone)}</td><td>${esc(x.address)}</td>
-        <td><div class="row-actions"><button class="ghost" onclick="editC = '${x.id}'; renderCustomers()">Edit</button>
-        ${can('delete') ? `<button class="ghost danger" onclick="delCustomer('${x.id}')">Delete</button>` : ''}</div></td></tr>`).join('')
-        : '<tr><td colspan="4" class="empty">No customers yet. Add your first one above.</td></tr>'}</tbody></table></div></div>`;
+    <div class="small" style="color:var(--muted)">Saved customers are shown in <b>New invoice</b>, in the Customer dropdown. Select one there to edit or delete it.</div>`;
 }
 function saveCustomer() {
   const name = $('#cn').value.trim();
   if (!name) { toast('Enter a customer name.'); return; }
   const data = {name, phone: $('#cp').value.trim(), gstin: $('#cg').value.trim(), address: $('#ca').value.trim()};
+  let cid = editC;
   if (editC) Object.assign(db.customers.find(x => x.id === editC), data);
-  else db.customers.push(Object.assign({id: uid()}, data));
-  editC = null; save(); toast('Customer saved'); renderCustomers();
+  else { cid = uid(); db.customers.push(Object.assign({id: cid}, data)); }
+  editC = null; save(); toast('Customer saved');
+  if (custBack) { custBack = false; draft.customerId = cid; go('new'); } else renderCustomers();
 }
+function cancelCust() { editC = null; if (custBack) { custBack = false; go('new'); } else renderCustomers(); }
+function addCustFromInvoice() { editC = null; custBack = true; go('customers'); }
+function editCustFromInvoice(id) { editC = id; custBack = true; go('customers'); }
 function delCustomer(id) {
   if (!can('delete')) return;
   if (!confirm('Delete this customer? Old invoices will not change.')) return;
-  db.customers = db.customers.filter(x => x.id !== id); save(); renderCustomers();
+  db.customers = db.customers.filter(x => x.id !== id); save();
+  if (tab === 'new') { if (draft.customerId === id) draft.customerId = ''; renderNew(); } else renderCustomers();
 }
 
 /* ---------- settings + backup ---------- */
