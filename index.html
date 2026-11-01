@@ -786,7 +786,7 @@ function renderSettings() {
       <div class="row-actions">
         <button class="ghost" onclick="exportData()">Download backup</button>
         <button class="ghost" onclick="$('#imp').click()">Restore from backup</button>
-        ${can('delete') ? '<button class="ghost danger" onclick="wipe()">Delete all data</button>' : ''}
+        ${cur.role === 'admin' ? '<button class="ghost danger" onclick="wipe()">Delete all data</button>' : ''}
         <input id="imp" type="file" accept="application/json" hidden onchange="importData(this.files[0])">
       </div></div>`;
 }
@@ -849,7 +849,7 @@ function importData(file) {
   r.readAsText(file);
 }
 function wipe() {
-  if (!can('delete')) return;
+  if (!cur || cur.role !== 'admin') return; // only Admin can delete all data
   if (!confirm('Delete ALL products, customers and invoices of this account?')) return;
   if (!confirm('Last check: this cannot be undone. Delete everything?')) return;
   db = build({}); save(); draft = newDraft(); go('settings');
@@ -1618,7 +1618,7 @@ function delOld(id) {
 
 /* ---------- create account (Admin only) ---------- */
 const USERS_KEY = 'billing-users-v1'; // old browser-only accounts (used for moving data)
-const PERMS = [['dash', 'Dashboard'], ['new', 'Create new invoice'], ['invoices', 'View invoices'], ['old', 'Old invoices (upload)'], ['products', 'Products'], ['customers', 'Customers'], ['settings', 'Settings (numbering, backup)'], ['payment', 'Record payments'], ['inv', 'Inventory (items, stock entry, upload)'], ['delete', 'Delete bills and records']];
+const PERMS = [['dash', 'Dashboard'], ['new', 'Create new invoice'], ['invoices', 'View invoices'], ['old', 'Old invoices (upload)'], ['products', 'Products'], ['customers', 'Customers'], ['settings', 'Settings (numbering, backup)'], ['payment', 'Record payments'], ['inv', 'Inventory (items, stock entry, upload)'], ['delete', 'Delete single items only (bill, product, customer, stock item, IMEI)']];
 const DEF_PERMS = ['dash', 'new', 'invoices', 'products', 'inv', 'customers', 'payment'];
 let usersCache = [], usersLoaded = false, billCounts = {}, editU = null;
 async function loadUsers() {
