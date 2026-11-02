@@ -359,6 +359,7 @@ function applyRemote(r) { // call after fetchAll, then set acct and db = load()
 function afterLoad() { // db is ready: remember what the server already has
   sent.core = sent.hadCore ? JSON.stringify(coreOf(db)) : '';
   dirty = false; syncFail = 0; setSync('ok', 'All changes saved');
+  const o = acct.id; getSig(o).then(x => { if (acct && acct.id === o) lastSig = x; }).catch(() => {});
   if (!sent.hadCore) save();
 }
 function save() {
@@ -393,6 +394,7 @@ async function doSync() {
       part.forEach(id => { delete sent.inv[id]; });
     }
     syncFail = 0;
+    if (!dirty) { try { lastSig = await getSig(owner); } catch (e) { /* ignore */ } }
     setSync(dirty ? 'busy' : 'ok', dirty ? 'Saving…' : 'All changes saved');
   } catch (e) {
     console.error(e); dirty = true; syncFail++;
@@ -407,15 +409,43 @@ async function flush() {
   return !dirty && !syncing;
 }
 window.addEventListener('beforeunload', e => { if (dirty || syncing) { e.preventDefault(); e.returnValue = ''; } });
-document.addEventListener('visibilitychange', async () => { // pick up changes made on another device
-  if (document.hidden || !cur || !acct || dirty || syncing || !$('#viewer').hidden || !$('#pay').hidden || Date.now() - lastPull < 30000) return;
+/* ---- live sync: bills made on web / app / another phone show up everywhere ---- */
+let lastSig = '', checking = false;
+async function getSig(owner) { // cheap fingerprint of what is online (no big data downloaded)
+  const c = await sb.from('ib_docs').select('updated_at').eq('owner', owner).eq('kind', 'core').maybeSingle();
+  if (c.error) throw c.error;
+  const ids = [];
+  for (let from = 0; ; from += 1000) {
+    const r = await sb.from('ib_invoices').select('id,updated_at').eq('owner', owner).order('id').range(from, from + 999);
+    if (r.error) throw r.error;
+    r.data.forEach(x => ids.push(x.id + '@' + x.updated_at));
+    if (r.data.length < 1000) break;
+  }
+  return (c.data ? c.data.updated_at : '') + '|' + ids.join(',');
+}
+function refreshView() {
+  const ae = document.activeElement;
+  if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)) return; // do not disturb typing
+  if (['dash', 'invoices', 'old', 'inv', 'products', 'customers'].includes(tab) && !invView) go(tab);
+}
+async function checkRemote(quiet) {
+  if (checking || !cur || !acct || dirty || syncing || document.hidden) return;
+  if (!$('#viewer').hidden || !$('#pay').hidden) return;
+  checking = true;
   try {
-    const r = await fetchAll(acct.id);
-    if (dirty || syncing || !cur) return;
-    applyRemote(r); db = load(); sent.core = r.hadCore ? JSON.stringify(coreOf(db)) : '';
-    if (['dash', 'invoices', 'old', 'inv'].includes(tab) && !invView) go(tab);
-  } catch (e) { /* try again next time */ }
-});
+    const owner = acct.id, sig = await getSig(owner);
+    if (sig === lastSig) return;
+    const r = await fetchAll(owner);
+    if (dirty || syncing || !cur || acct.id !== owner) return;
+    applyRemote(r); lastSig = sig; db = load();
+    sent.core = r.hadCore ? JSON.stringify(coreOf(db)) : '';
+    if (!quiet) { refreshView(); toast('Updated with the latest data'); }
+  } catch (e) { /* offline: try again later */ }
+  finally { checking = false; }
+}
+setInterval(() => checkRemote(false), 12000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) checkRemote(false); });
+window.addEventListener('online', () => checkRemote(false));
 let toastTimer;
 function toast(msg) {
   const t = $('#toast'); t.textContent = msg; t.classList.add('show');
@@ -540,7 +570,8 @@ function delRow(i) {
   if (!draft.items.length) draft.items.push({pid: '', inv: '', imeis: '', name: '', qty: 1, price: 0, tax: 0});
   renderNew();
 }
-function saveInvoice() {
+async function saveInvoice() {
+  await checkRemote(true); // get latest bill number and stock from other devices first
   const items = draft.items.filter(it => it.name.trim() && +it.qty > 0).map(it => ({name: it.name.trim(), qty: +it.qty, price: +it.price || 0, tax: +it.tax || 0, inv: it.inv || '', imeis: it.inv ? parseImeis(it.imeis || '') : []}));
   if (!items.length) { toast('Add at least one item with a name and quantity.'); return; }
   const ierr = checkBillImeis(items);
