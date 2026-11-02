@@ -170,6 +170,35 @@ aside button[hidden]{display:none}
 .inv-tot .paid span:last-child{color:#15803d;font-weight:700}
 .inv-tot .bal{font-weight:800;color:#d92d20}
 .inv-ft{margin-top:24px;padding:12px 16px;border-radius:8px;background:#fff7e6;border:1px dashed #f2a93b;color:#5a4210;font-size:13px;white-space:pre-line;text-align:center}
+
+.inv-sum{display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap;margin-top:18px}
+.inv-sum .inv-tot{margin:0 0 0 auto;flex:0 0 330px;max-width:100%}
+.inv-pay{flex:1;min-width:150px;font-size:11px;line-height:1.35;display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+.inv-pay .small{font-size:10px}
+.inv-pay img{width:84px;height:84px;object-fit:contain;image-rendering:pixelated;display:block}
+.inv-pay .lb{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px}
+#dsn{position:fixed;right:10px;top:70px;display:flex;flex-direction:column;gap:6px;z-index:12}
+#dsn[hidden]{display:none}
+#dsn b{color:#fff;font-size:12px;text-align:center}
+#dsn button{background:#fff;border:2px solid #fff;border-radius:8px;padding:8px 10px;font:inherit;font-size:13px;cursor:pointer}
+#dsn button.on{border-color:#f59e0b;font-weight:700}
+#sheet.tx .inv-hd{background:var(--hd);color:var(--hdt)}
+#sheet.tx .inv-hd::after{background:var(--ac)}
+#sheet.tx .inv-hd h1{color:var(--hdt)}
+#sheet.tx .inv-hd .small,#sheet.tx .inv-meta .dt{color:var(--hds)}
+#sheet.tx .inv-meta .tt{color:var(--tt)}
+#sheet.tx .inv-bill{background:var(--lt);border-left-color:var(--ac)}
+#sheet.tx .inv-bill .lb,#sheet.tx .inv-pay .lb{color:var(--ac)}
+#sheet.tx .inv-tbl{border-color:var(--bd)}
+#sheet.tx .inv-tbl th{background:var(--ac)}
+#sheet.tx .inv-tbl tbody tr:nth-child(even) td{background:var(--lt)}
+#sheet.tx .inv-tot .grand{background:var(--ac)}
+#sheet.tx .inv-tot .grand span:last-child{color:var(--tt)}
+#sheet.th1{--hd:#fff;--hdt:#111;--hds:#444;--ac:#111;--lt:#f4f4f4;--bd:#bbb;--tt:#fff}
+#sheet.th1 .inv-hd{border-bottom:3px solid #111}
+#sheet.th2{--hd:linear-gradient(120deg,#1e3a8a,#2563eb);--hdt:#fff;--hds:#dbeafe;--ac:#1d4ed8;--lt:#eff6ff;--bd:#bfdbfe;--tt:#fde68a}
+#sheet.th3{--hd:linear-gradient(120deg,#1f2937,#111827 60%,#b91c1c);--hdt:#fff;--hds:#e5e7eb;--ac:#c8102e;--lt:#fdf2f2;--bd:#f3c1c1;--tt:#fff}
+#sheet.th2 .inv-meta .tt{color:#fde68a}
 @media (max-width:600px){.inv-hd,.inv-body{padding-left:16px;padding-right:16px}.inv-meta{text-align:left}}
 
 /* ---- print / save as PDF ---- */
@@ -247,11 +276,15 @@ aside button[hidden]{display:none}
     <div id="viewbar" hidden></div>
     <button data-tab="dash">Dashboard</button>
     <button data-tab="new">New invoice</button>
+    <button data-tab="est">Estimate / Quotation</button>
     <button data-tab="invoices">Invoices</button>
+    <button data-tab="daybook">Day Book</button>
     <button data-tab="old">Old Invoices</button>
     <button data-tab="products">Products</button>
     <button data-tab="inv">Inventory</button>
     <button data-tab="customers">Customers</button>
+    <button data-tab="acc">Account details</button>
+    <button data-tab="wa">WhatsApp settings</button>
     <button data-tab="settings">Settings</button>
     <button data-tab="users">Create account</button>
     <button class="out" onclick="logout()">Log out</button>
@@ -263,11 +296,13 @@ aside button[hidden]{display:none}
 <div id="viewer" hidden>
   <div class="viewer-box">
     <div class="viewer-bar">
+      <button class="btn" style="background:#16a34a" onclick="sendWa()">Send to WhatsApp</button>
       <button class="btn" onclick="printInv()">Print / Save as PDF</button>
       <button class="ghost" style="background:#fff" onclick="closeViewer()">Close</button>
     </div>
     <div id="sheet"></div>
   </div>
+  <div id="dsn" hidden></div>
 </div>
 <div id="toast" role="status"></div>
 
@@ -295,11 +330,12 @@ function defaults() {
 function build(d) {
   d = d || {};
   const base = defaults(), o = d.settings || {};
-  const r = {settings: Object.assign(base.settings, {prefix: o.prefix, nextNo: o.nextNo, note: o.note}), businesses: d.businesses || [], defaultBiz: d.defaultBiz || '', products: d.products || [], customers: d.customers || [], invoices: d.invoices || [], inventory: fixInv(d.inventory)};
+  const r = {settings: Object.assign(base.settings, {prefix: o.prefix, nextNo: o.nextNo, note: o.note, pay: o.pay || {}, wa: o.wa || {}}), businesses: d.businesses || [], defaultBiz: d.defaultBiz || '', products: d.products || [], customers: d.customers || [], invoices: d.invoices || [], estimates: d.estimates || [], inventory: fixInv(d.inventory)};
   if (acct && acct.role === 'user') { // company details are fixed by Admin
     if (!d.settings) r.settings.prefix = acct.prefix || 'INV-';
-    r.businesses = [{id: 'co-' + acct.id, name: acct.name, address: acct.address || '', phone: acct.phone || '', gstin: acct.gstin || '', logo: acct.logo || ''}];
-    r.defaultBiz = r.businesses[0].id;
+    const seed = {id: 'co-' + acct.id, name: acct.name, address: acct.address || '', phone: acct.phone || '', gstin: acct.gstin || '', logo: acct.logo || ''};
+    r.businesses = [seed].concat((d.businesses || []).filter(b => b.id !== seed.id)); // own shops added by the user
+    if (!r.businesses.some(b => b.id === d.defaultBiz)) r.defaultBiz = seed.id;
   }
   if (r.settings.prefix == null) r.settings.prefix = 'INV-';
   if (!r.settings.nextNo) r.settings.nextNo = 1;
@@ -325,7 +361,7 @@ const errMsg = e => /already registered|already exists/i.test((e && e.message) |
 let remote = {core: {}, invoices: []}, sent = {core: '', inv: {}};
 let dirty = false, syncing = false, syncTimer = null, syncFail = 0, lastPull = 0;
 const idTime = id => parseInt(String(id).slice(0, -4), 36) || 0;
-const coreOf = x => ({settings: x.settings, businesses: x.businesses, defaultBiz: x.defaultBiz, products: x.products, customers: x.customers, inventory: x.inventory});
+const coreOf = x => ({settings: x.settings, businesses: x.businesses, defaultBiz: x.defaultBiz, products: x.products, customers: x.customers, inventory: x.inventory, estimates: x.estimates});
 function load() { return build(Object.assign({}, remote.core, {invoices: remote.invoices})); }
 function setSync(cls, msg) { const el = $('#sync'); if (el) { el.className = cls; el.textContent = msg; } }
 function chunkRows(items) { // split rows so one request is not too big
@@ -453,21 +489,24 @@ function toast(msg) {
 }
 
 /* ---------- calculation ---------- */
-function calc(items, discPct) {
+function calc(items, discPct, rnd) {
   let sub = 0, disc = 0, tax = 0;
   items.forEach(it => {
     const a = (+it.qty || 0) * (+it.price || 0);
     const d = a * (+discPct || 0) / 100;
     sub += a; disc += d; tax += (a - d) * (+it.tax || 0) / 100;
   });
-  return {sub, disc, tax, total: sub - disc + tax};
+  let total = sub - disc + tax, ro = 0;
+  if (rnd) { ro = Math.round((Math.round(total) - total) * 100) / 100; total = Math.round(total); }
+  return {sub, disc, tax, round: ro, total};
 }
 const lineAmt = it => (+it.qty || 0) * (+it.price || 0);
 
 /* ---------- navigation ---------- */
 let tab = 'dash';
-const TABS = ['dash', 'new', 'invoices', 'old', 'products', 'inv', 'customers', 'settings', 'users'];
-const can = p => !!cur && (cur.role === 'admin' || (p !== 'users' && !!(cur.perms || {})[p]));
+const TABS = ['dash', 'new', 'est', 'invoices', 'daybook', 'acc', 'wa', 'old', 'products', 'inv', 'customers', 'settings', 'users'];
+const PMAP = {est: 'new', daybook: 'invoices', acc: 'settings', wa: 'settings'};
+const can = p => (p = PMAP[p] || p, !!cur) && (cur.role === 'admin' || (p !== 'users' && !!(cur.perms || {})[p]));
 const firstTab = () => TABS.find(can);
 function applyNav() { document.querySelectorAll('aside button[data-tab]').forEach(b => b.hidden = !can(b.dataset.tab)); }
 function go(t) {
@@ -479,7 +518,7 @@ function go(t) {
   if (t !== tab) { tmpLogo = ''; editU = null; editB = null; }
   tab = t;
   document.querySelectorAll('aside button[data-tab]').forEach(b => b.classList.toggle('on', b.dataset.tab === t));
-  ({new: renderNew, invoices: renderInvoices, products: renderProducts, customers: renderCustomers, settings: renderSettings, old: renderOld, dash: renderDash, users: renderUsers, inv: renderInventory})[t]();
+  ({new: renderNew, invoices: renderInvoices, products: renderProducts, customers: renderCustomers, settings: renderSettings, old: renderOld, dash: renderDash, users: renderUsers, inv: renderInventory, est: renderEst, daybook: renderDayBook, acc: renderAccount, wa: renderWa})[t]();
   $('#brand').textContent = defBiz().name || 'Billing';
   window.scrollTo(0, 0);
 }
@@ -487,23 +526,18 @@ document.querySelectorAll('aside button[data-tab]').forEach(b => b.onclick = () 
 
 /* ---------- new invoice ---------- */
 let draft = newDraft();
-function newDraft() { return {bizId: db.defaultBiz, customerId: '', date: today(), discount: 0, note: '', items: [{pid: '', inv: '', imeis: '', name: '', qty: 1, price: 0, tax: 0}]}; }
+function newDraft() { return {bizId: db.defaultBiz, customerId: '', date: today(), discount: 0, note: '', round: true, mode: 'credit', received: '', payRef: '', payType: 'Cash', items: [{pid: '', inv: '', imeis: '', name: '', qty: 1, price: 0, tax: 0}]}; }
 
 function renderNew() {
   const d = draft;
   const rows = d.items.map((it, i) => `
     <tr>
       <td>
-        <select onchange="pickProduct(${i}, this.value)" aria-label="Product">
-          <option value="">Custom item</option>
-          ${db.products.map(p => `<option value="${p.id}" ${p.id === it.pid ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}
-        </select>
-        <input placeholder="Item name" value="${esc(it.name)}" oninput="setItem(${i}, 'name', this.value)" aria-label="Item name">
-        <select style="margin-top:4px" onchange="setItem(${i}, 'inv', this.value); renderNew()" aria-label="Stock item (inventory)">
-          <option value="">No stock item (inventory not changed)</option>
+        <select onchange="pickStock(${i}, this.value)" aria-label="Item">
+          <option value="">Select item</option>
           ${db.inventory.items.map(x => `<option value="${x.id}" ${x.id === it.inv ? 'selected' : ''}>${esc(x.name)} (stock ${x.qty})</option>`).join('')}
         </select>
-        ${it.inv ? `<textarea rows="2" style="margin-top:4px" placeholder="IMEI numbers sold (one per line or comma separated)" oninput="setItem(${i}, 'imeis', this.value)" aria-label="IMEI numbers">${esc(it.imeis || '')}</textarea><div class="small" style="color:var(--muted)">IMEI available in stock: ${imeiAvail(invItem(it.inv) || {imeis: []})}</div>` : ''}
+        ${it.inv ? imeiPick(i, it) : ''}
       </td>
       <td><input class="num" type="number" min="0" step="any" value="${esc(it.qty)}" oninput="setItem(${i}, 'qty', this.value)" aria-label="Quantity"></td>
       <td><input class="num" type="number" min="0" step="any" value="${esc(it.price)}" oninput="setItem(${i}, 'price', this.value)" aria-label="Price"></td>
@@ -539,25 +573,71 @@ function renderNew() {
         <div><span>Subtotal</span><span id="t-sub"></span></div>
         <div><span>Discount</span><span id="t-disc"></span></div>
         <div><span>Tax</span><span id="t-tax"></span></div>
+        <div><span><label style="display:inline;margin:0"><input type="checkbox" style="width:auto" ${d.round ? 'checked' : ''} onchange="draft.round = this.checked; updateTotals()"> Round off</label></span><span id="t-ro"></span></div>
         <div class="grand"><span>Total</span><span id="t-total"></span></div>
       </div>
+    </div>
+    <div class="card">
+      <h3>Payment</h3>
+      <div class="row-actions" style="margin-bottom:10px">
+        <button class="ghost" id="m-credit" onclick="setMode('credit')">Credit</button>
+        <button class="ghost" id="m-cash" onclick="setMode('cash')">Cash</button>
+      </div>
+      <div class="grid">
+        <div><label for="pty">Payment type</label><select id="pty" onchange="draft.payType = this.value">${['Cash', 'UPI / Online', 'Bank transfer', 'Cheque'].map(x => `<option ${x === d.payType ? 'selected' : ''}>${x}</option>`).join('')}</select></div>
+        <div><label for="rc">Received (₹)</label><input id="rc" type="number" min="0" step="any" value="${esc(d.received)}" oninput="draft.received = this.value; updateTotals()"></div>
+        <div><label for="prf">Reference no. (UPI / bank, optional)</label><input id="prf" value="${esc(d.payRef)}" oninput="draft.payRef = this.value"></div>
+      </div>
+      <div class="totals"><div class="grand"><span>Balance</span><span id="t-bal"></span></div></div>
     </div>
     <div class="card">
       <label for="nt">Note on invoice (optional)</label>
       <textarea id="nt" rows="2" oninput="draft.note = this.value">${esc(d.note)}</textarea>
     </div>
-    <button class="btn" onclick="saveInvoice()">Save invoice</button>`;
+    <div class="row-actions"><button class="btn" onclick="saveInvoice()">Save invoice</button><button class="ghost" onclick="saveEstimate()">Save as Estimate</button></div>`;
   updateTotals();
 }
 function updateTotals() {
   draft.items.forEach((it, i) => { const el = $('#lt' + i); if (el) el.textContent = money(lineAmt(it)); });
-  const t = calc(draft.items, draft.discount);
+  const t = calc(draft.items, draft.discount, draft.round);
+  if (draft.mode === 'cash') { draft.received = t.total; const r = $('#rc'); if (r) r.value = t.total; }
+  const rcv = Math.min(+draft.received || 0, t.total);
+  $('#t-ro').textContent = (t.round < 0 ? '− ' : t.round > 0 ? '+ ' : '') + money(Math.abs(t.round));
+  $('#t-bal').textContent = money(t.total - rcv);
+  ['credit', 'cash'].forEach(m => { const b = $('#m-' + m); if (b) b.style.cssText = draft.mode === m ? 'background:var(--accent);color:#fff' : ''; });
   $('#t-sub').textContent = money(t.sub);
   $('#t-disc').textContent = '− ' + money(t.disc);
   $('#t-tax').textContent = money(t.tax);
   $('#t-total').textContent = money(t.total);
 }
+function setMode(m) { draft.mode = m; if (m === 'credit') draft.received = ''; renderNew(); }
 function setItem(i, f, v) { draft.items[i][f] = v; updateTotals(); }
+function pickStock(i, id) {
+  const it = draft.items[i], x = invItem(id);
+  it.inv = id; it.imeis = ''; it.pid = '';
+  if (x) {
+    it.name = x.name;
+    const p = db.products.find(q => q.name.toLowerCase() === x.name.toLowerCase());
+    if (p) { it.pid = p.id; it.price = p.price; it.tax = p.tax; }
+    if (!(x.imeis || []).some(m => !m.billId)) it.qty = it.qty || 1; else it.qty = 0;
+  } else { it.name = ''; it.qty = 1; }
+  renderNew();
+}
+function imeiPick(i, it) {
+  const x = invItem(it.inv); if (!x) return '';
+  const av = (x.imeis || []).filter(m => !m.billId);
+  if (!av.length) return '<div class="small" style="color:var(--muted);margin-top:4px">No IMEI in stock for this item. Enter quantity manually.</div>';
+  const sel = new Set(parseImeis(it.imeis || ''));
+  return `<div class="small" style="color:var(--muted);margin-top:6px">Tick the IMEI being billed (${av.length} in stock)</div>
+    <div style="max-height:180px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:4px 8px;margin-top:4px">${av.map(m => `<label style="display:flex;align-items:center;gap:8px;margin:0;padding:3px 0;color:var(--ink);cursor:pointer"><input type="checkbox" style="width:auto" ${sel.has(m.no) ? 'checked' : ''} onchange="tickImei(${i}, '${esc(m.no)}', this.checked)">${esc(m.no)}</label>`).join('')}</div>`;
+}
+function tickImei(i, no, on) {
+  const it = draft.items[i], set = new Set(parseImeis(it.imeis || ''));
+  on ? set.add(no) : set.delete(no);
+  it.imeis = Array.from(set).join(', '); it.qty = set.size;
+  const q = document.querySelectorAll('.items tbody tr')[i]; if (q) q.querySelector('input[aria-label="Quantity"]').value = set.size;
+  updateTotals();
+}
 function pickProduct(i, pid) {
   const it = draft.items[i], p = db.products.find(x => x.id === pid);
   it.pid = pid;
@@ -587,11 +667,16 @@ async function saveInvoice() {
     customer: c ? {name: c.name, phone: c.phone, address: c.address, gstin: c.gstin} : {name: 'Walk-in customer'},
     items, discount: +draft.discount || 0, note: draft.note, biz: bizSnap(draft.bizId)
   };
-  inv.totals = calc(items, inv.discount);
+  inv.totals = calc(items, inv.discount, draft.round);
+  if ((+draft.received || 0) > inv.totals.total + 0.005) { toast('Received is more than the total ' + money(inv.totals.total) + '. Extra is ignored.'); }
+  const rcv = Math.round(Math.min(+draft.received || 0, inv.totals.total) * 100) / 100;
+  if (rcv > 0) inv.payments = [{id: (draft.payRef || '').trim() || (draft.mode === 'cash' ? 'CASH' : 'ON-SALE'), type: draft.payType || 'Cash', amount: rcv, date: inv.date}];
   s.nextNo++;
   stockOut(items, inv.no, inv.date);
   markImeis(items, inv.no, inv.id, inv.date);
   db.invoices.unshift(inv);
+  const fe = (db.estimates || []).find(e => e.id === draft.fromEst);
+  if (fe) { fe.status = 'Converted'; fe.invNo = inv.no; }
   save();
   draft = newDraft();
   toast('Invoice ' + inv.no + ' saved');
@@ -599,8 +684,176 @@ async function saveInvoice() {
   showInvoice(inv.id);
 }
 
+
+/* ---------- estimate / quotation ---------- */
+function draftItems() { return draft.items.filter(it => it.name.trim() && +it.qty > 0).map(it => ({name: it.name.trim(), qty: +it.qty, price: +it.price || 0, tax: +it.tax || 0, inv: it.inv || '', imeis: []})); }
+function saveEstimate() {
+  const items = draftItems();
+  if (!items.length) { toast('Add at least one item with a name and quantity.'); return; }
+  const c = db.customers.find(x => x.id === draft.customerId);
+  const list = db.estimates = db.estimates || [];
+  const e = {id: uid(), no: 'EST-' + String(list.length + 1).padStart(4, '0'), date: draft.date || today(), customer: c ? {name: c.name, phone: c.phone, address: c.address, gstin: c.gstin} : {name: 'Walk-in customer'}, customerId: draft.customerId, items, discount: +draft.discount || 0, round: draft.round, note: draft.note, biz: bizSnap(draft.bizId), status: 'Open', payments: []};
+  e.totals = calc(items, e.discount, e.round);
+  list.unshift(e); save(); draft = newDraft(); toast('Estimate ' + e.no + ' saved'); go('est');
+}
+function renderEst() {
+  const l = db.estimates || [], tot = l.reduce((a, e) => a + e.totals.total, 0), conv = l.filter(e => e.status === 'Converted').reduce((a, e) => a + e.totals.total, 0);
+  $('#main').innerHTML = `<div class="bar"><h2 style="margin:0">Estimate / Quotation</h2><button class="btn" onclick="draft = newDraft(); go('new')">+ Add Estimate</button></div>
+    <div class="card"><div class="grid"><div><label>Total quotations</label><b>${money(tot)}</b></div><div><label>Converted</label><b>${money(conv)}</b></div><div><label>Open</label><b>${money(tot - conv)}</b></div></div></div>
+    <div class="card"><div class="scroll"><table><thead><tr><th>No.</th><th>Date</th><th>Party</th><th class="num">Amount</th><th>Status</th><th></th></tr></thead><tbody>
+    ${l.length ? l.map(e => `<tr><td>${esc(e.no)}</td><td>${esc(e.date)}</td><td>${esc(e.customer.name)}</td><td class="num">${money(e.totals.total)}</td><td>${e.status === 'Converted' ? 'Converted → ' + esc(e.invNo) : 'Open'}</td><td><div class="row-actions"><button class="ghost" onclick="viewEst('${e.id}')">View</button>${e.status === 'Open' ? `<button class="ghost" onclick="convertEst('${e.id}')">Convert to Invoice</button>` : ''}${can('delete') ? `<button class="ghost danger" onclick="delEst('${e.id}')">Delete</button>` : ''}</div></td></tr>`).join('') : '<tr><td colspan="6" class="empty">No estimates yet.</td></tr>'}
+    </tbody></table></div></div>`;
+}
+function viewEst(id) { const e = db.estimates.find(x => x.id === id); if (!e) return; printName = e.no; curDoc = {d: e, est: true}; $('#sheet').innerHTML = invoiceHTML(e, 'Estimate'); $('#viewer').hidden = false; applyDesign(true); }
+function convertEst(id) {
+  const e = db.estimates.find(x => x.id === id); if (!e) return;
+  draft = newDraft(); Object.assign(draft, {bizId: db.businesses.some(b => b.id === (e.biz && e.biz.id)) ? e.biz.id : db.defaultBiz, customerId: e.customerId || '', discount: e.discount, round: e.round !== false, note: e.note || '', fromEst: id,
+    items: e.items.map(it => ({pid: '', inv: it.inv || '', imeis: '', name: it.name, qty: it.qty, price: it.price, tax: it.tax}))});
+  go('new'); toast('Estimate loaded. Check IMEIs and save the invoice.');
+}
+function delEst(id) { if (!confirm('Delete this estimate?')) return; db.estimates = db.estimates.filter(x => x.id !== id); save(); renderEst(); }
+
+/* ---------- day book ---------- */
+let dbFrom = '', dbTo = '';
+function renderDayBook() {
+  if (!dbFrom) dbFrom = dbTo = today();
+  const rows = [];
+  db.invoices.forEach(i => {
+    if (i.date >= dbFrom && i.date <= dbTo) rows.push({d: i.date, ref: i.no, name: i.customer.name, type: 'Sale', amt: i.totals.total, paid: 0});
+    (i.payments || []).forEach(p => { if (p.date >= dbFrom && p.date <= dbTo) rows.push({d: p.date, ref: p.id, name: i.customer.name, type: 'Payment-In (' + i.no + ')', amt: 0, paid: p.amount}); });
+  });
+  rows.sort((a, b) => a.d < b.d ? 1 : a.d > b.d ? -1 : 0);
+  const sale = rows.reduce((a, r) => a + r.amt, 0), rcv = rows.reduce((a, r) => a + r.paid, 0);
+  $('#main').innerHTML = `<div class="bar"><h2 style="margin:0">Day Book</h2><div class="row-actions"><input type="date" value="${dbFrom}" onchange="dbFrom = this.value; renderDayBook()"><input type="date" value="${dbTo}" onchange="dbTo = this.value; renderDayBook()"></div></div>
+    <div class="card"><div class="grid"><div><label>Total sale</label><b>${money(sale)}</b></div><div><label>Money in</label><b>${money(rcv)}</b></div></div></div>
+    <div class="card"><div class="scroll"><table><thead><tr><th>Date</th><th>Ref</th><th>Party</th><th>Type</th><th class="num">Sale</th><th class="num">Money in</th></tr></thead><tbody>
+    ${rows.length ? rows.map(r => `<tr><td>${esc(r.d)}</td><td>${esc(r.ref)}</td><td>${esc(r.name)}</td><td>${esc(r.type)}</td><td class="num">${r.amt ? money(r.amt) : ''}</td><td class="num">${r.paid ? money(r.paid) : ''}</td></tr>`).join('') : '<tr><td colspan="6" class="empty">No transactions in this period.</td></tr>'}
+    </tbody></table></div></div>`;
+}
+
+
+/* ---------- bill design + account details ---------- */
+const DESIGNS = ['Design 1', 'Design 2', 'Design 3', 'Design 4'];
+let design = 0;
+function applyDesign(show) {
+  const sh = $('#sheet'); sh.className = design ? 'tx th' + design : '';
+  const d = $('#dsn'); if (show) d.hidden = false;
+  d.innerHTML = '<b>Bill design</b>' + DESIGNS.map((n, k) => `<button class="${k === design ? 'on' : ''}" onclick="design = ${k}; applyDesign()">${n}</button>`).join('');
+}
+function payBlock() {
+  const p = (db.settings && db.settings.pay) || {};
+  const lines = [p.holder && 'A/c name: ' + esc(p.holder), p.bank && 'Bank: ' + esc(p.bank), p.acno && 'A/c no.: ' + esc(p.acno), p.ifsc && 'IFSC: ' + esc(p.ifsc)].filter(Boolean);
+  if (!lines.length && !p.qr) return '<div class="inv-pay"></div>';
+  return `<div class="inv-pay">${p.qr ? `<div><img src="${p.qr}" alt="UPI QR"><div class="small" style="text-align:center">Scan to pay (UPI)</div></div>` : ''}${lines.length ? `<div><div class="lb">Bank details</div>${lines.join('<br>')}</div>` : ''}</div>`;
+}
+let tmpQr = null;
+function renderAccount() {
+  tmpQr = null;
+  const p = (db.settings && db.settings.pay) || {};
+  $('#main').innerHTML = `<h2>Account details</h2>
+    <div class="card"><p style="margin-top:0;color:var(--muted)">These details and the UPI QR are printed on every invoice, in the empty space beside the totals.</p>
+      <div class="grid">
+        <div><label for="ah">Account holder name</label><input id="ah" value="${esc(p.holder || '')}"></div>
+        <div><label for="ab">Bank name</label><input id="ab" value="${esc(p.bank || '')}"></div>
+        <div><label for="an">Account number</label><input id="an" value="${esc(p.acno || '')}"></div>
+        <div><label for="ai">IFSC code</label><input id="ai" value="${esc(p.ifsc || '')}" style="text-transform:uppercase"></div>
+        <div><label for="aq">UPI QR photo</label><input id="aq" type="file" accept="image/*" onchange="pickQr(this.files[0])"></div>
+      </div>
+      <div style="margin-top:12px"><img id="aqp" ${p.qr ? `src="${p.qr}"` : 'hidden'} alt="UPI QR" style="width:160px;height:160px;object-fit:contain;border:1px solid var(--line);border-radius:8px;background:#fff"></div>
+      <div class="row-actions" style="margin-top:12px"><button class="btn" onclick="saveAccount()">Save</button><button class="ghost danger" onclick="tmpQr = ''; $('#aqp').hidden = true">Remove QR</button></div></div>`;
+}
+const loadJs = u => new Promise((ok, no) => { const e = document.createElement('script'); e.src = u; e.onload = ok; e.onerror = no; document.head.appendChild(e); });
+async function pickQr(file) {
+  if (!file) return;
+  const src = await new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(file); });
+  const im = await new Promise(res => { const i = new Image(); i.onload = () => res(i); i.onerror = () => res(null); i.src = src; });
+  if (!im) { toast('This image could not be read.'); return; }
+  let out = '';
+  try {
+    if (!window.jsQR) await loadJs('https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js');
+    if (!window.qrcode) await loadJs('https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js');
+    let code = null;
+    for (const w of [800, 500, 1200, 300]) {
+      const k = w / Math.max(im.width, im.height), c = document.createElement('canvas');
+      c.width = Math.round(im.width * k); c.height = Math.round(im.height * k);
+      const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(im, 0, 0, c.width, c.height);
+      code = jsQR(g.getImageData(0, 0, c.width, c.height).data, c.width, c.height, {inversionAttempts: 'attemptBoth'});
+      if (code) break;
+    }
+    if (code && code.data) { const q = qrcode(0, 'M'); q.addData(code.data); q.make(); out = q.createDataURL(8, 2); }
+  } catch (e) { out = ''; }
+  if (!out) { // could not read the QR: keep the photo as it is
+    const k = Math.min(1, 500 / Math.max(im.width, im.height)), c = document.createElement('canvas');
+    c.width = Math.round(im.width * k); c.height = Math.round(im.height * k);
+    c.getContext('2d').drawImage(im, 0, 0, c.width, c.height); out = c.toDataURL('image/jpeg', 0.9);
+    toast('QR could not be read. Photo saved as it is. Try a clearer, straight photo.');
+  } else toast('QR cleaned. Plain QR will be printed.');
+  tmpQr = out; const e = $('#aqp'); e.src = out; e.hidden = false;
+}
+function saveAccount() {
+  const old = (db.settings.pay || {});
+  db.settings.pay = {holder: $('#ah').value.trim(), bank: $('#ab').value.trim(), acno: $('#an').value.trim(), ifsc: $('#ai').value.trim().toUpperCase(), qr: tmpQr !== null ? tmpQr : (old.qr || '')};
+  save(); toast('Account details saved');
+}
+
+
+/* ---------- whatsapp ---------- */
+let curDoc = null, waTimer = null;
+const WA_MSG = 'Hello {party},\nYour {type} {no} dated {date} from {business}:\n{items}\nTotal: {total}\nReceived: {paid}\nBalance: {balance}\nThank you for your business!';
+const waCfg = () => Object.assign({cc: '91', mode: 'web', msg: WA_MSG, server: 'http://localhost:3000'}, (db.settings && db.settings.wa) || {});
+function renderWa() {
+  const w = waCfg();
+  $('#main').innerHTML = `<h2>WhatsApp settings</h2>
+    <div class="card"><div class="grid">
+      <div><label for="wc">Country code only (India = 91)</label><input id="wc" value="${esc(String(w.cc).length > 3 ? '91' : w.cc)}" maxlength="3"></div>
+      <div><label for="wm">Send method</label><select id="wm" onchange="waModeUi()"><option value="server" ${w.mode === 'server' ? 'selected' : ''}>Direct send (WhatsApp linked here, no new tab)</option><option value="web" ${w.mode === 'web' ? 'selected' : ''}>WhatsApp Web tab</option><option value="app" ${w.mode === 'app' ? 'selected' : ''}>WhatsApp app / wa.me</option></select></div>
+    </div>
+    <div id="wsv" style="margin-top:12px"><label for="wsu">WhatsApp server address</label><input id="wsu" value="${esc(w.server)}" onchange="saveWa(true); waPoll()">
+      <div id="wast" style="margin-top:10px" class="small"></div></div>
+    <div style="margin-top:12px"><label for="wt">Message. You can use {party} {type} {no} {date} {business} {items} {total} {paid} {balance}</label><textarea id="wt" rows="8">${esc(w.msg)}</textarea></div>
+    <div class="row-actions" style="margin-top:12px"><button class="btn" onclick="saveWa()">Save</button><button class="ghost" onclick="$('#wt').value = WA_MSG">Reset message</button></div></div>
+    <div class="card small" style="color:var(--muted)"><b>Direct send:</b> run the included <b>wa-server.js</b> on this computer (node wa-server.js). Its QR shows here. Scan it once from your phone (WhatsApp &gt; Linked devices). After that, Send to WhatsApp sends the bill straight from here, with no new tab.</div>`;
+  waModeUi();
+}
+function waModeUi() { const m = $('#wm').value; $('#wsv').hidden = m !== 'server'; if (m === 'server') waPoll(); }
+async function waPoll() {
+  clearTimeout(waTimer);
+  const el = $('#wast'); if (tab !== 'wa' || !el) return;
+  try {
+    const r = await (await fetch($('#wsu').value.replace(/\/$/, '') + '/status')).json();
+    el.innerHTML = r.ready ? '<b style="color:#15803d">● WhatsApp connected. Ready to send.</b>' : (r.qr ? `<div>Scan this QR with your phone (WhatsApp &gt; Linked devices):</div><img src="${r.qr}" alt="QR" style="width:220px;height:220px;margin-top:6px">` : 'Starting WhatsApp, please wait...');
+  } catch (e) { el.innerHTML = '<b style="color:#b42318">● Server not running.</b> Start wa-server.js on this computer.'; }
+  waTimer = setTimeout(waPoll, 3000);
+}
+function saveWa(quiet) {
+  const cc = $('#wc').value.replace(/\D/g, '');
+  if (!cc || cc.length > 3) { toast('Country code must be 1 to 3 digits, like 91. Do not put a phone number here.'); return; }
+  db.settings.wa = {cc, mode: $('#wm').value, msg: $('#wt').value || WA_MSG, server: $('#wsu').value.trim() || 'http://localhost:3000'};
+  save(); if (!quiet) toast('WhatsApp settings saved');
+}
+async function sendWa() {
+  if (!curDoc) return;
+  const d = curDoc.d, w = waCfg(), t = d.totals, paid = curDoc.est ? 0 : paidOf(d), bal = curDoc.est ? t.total : dueOf(d);
+  let ph = String((d.customer && d.customer.phone) || '').replace(/\D/g, '');
+  if (!ph) { ph = (prompt('No phone number on this bill. Enter customer WhatsApp number:') || '').replace(/\D/g, ''); if (!ph) return; }
+  ph = ph.replace(/^0+/, ''); if (ph.length === 10) ph = (String(w.cc).length > 3 ? '91' : w.cc) + ph;
+  const items = d.items.map((it, i) => (i + 1) + '. ' + it.name + ' x' + it.qty + ' = ' + money(lineAmt(it))).join('\n');
+  const map = {party: d.customer.name, type: curDoc.est ? 'estimate' : 'invoice', no: d.no, date: d.date, business: (d.biz && d.biz.name) || '', items, total: money(t.total), paid: money(paid), balance: money(bal)};
+  const text = w.msg.replace(/\{(\w+)\}/g, (m, k) => k in map ? map[k] : m);
+  if (w.mode === 'server') {
+    try {
+      const r = await fetch(w.server.replace(/\/$/, '') + '/send', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({phone: ph, text})});
+      const j = await r.json(); if (!r.ok) throw new Error(j.error || 'Failed');
+      toast('Bill sent on WhatsApp to ' + ph);
+    } catch (e) { toast('Not sent: ' + (e.message === 'Failed to fetch' ? 'WhatsApp server is not running.' : e.message)); }
+    return;
+  }
+  const url = (w.mode === 'app' ? 'https://wa.me/' + ph + '?text=' : 'https://web.whatsapp.com/send?phone=' + ph + '&text=') + encodeURIComponent(text);
+  window.open(url, 'wa_billing');
+}
+
 /* ---------- invoice viewer ---------- */
-function invoiceHTML(inv) {
+function invoiceHTML(inv, title) {
   const s = inv.biz || bizSnap(), c = inv.customer || {};
   const rows = inv.items.map((it, i) => `<tr><td>${i + 1}</td><td>${esc(it.name)}${(it.imeis || []).length ? `<div class="small" style="color:#555;word-break:break-all">IMEI: ${it.imeis.map(v => esc(v)).join(', ')}</div>` : ''}</td><td class="num">${it.qty}</td><td class="num">${money(it.price)}</td><td class="num">${it.tax}%</td><td class="num">${money(lineAmt(it))}</td></tr>`).join('');
   const t = inv.totals, st = statusOf(inv), stc = st === 'Paid' ? '' : (st === 'Due' ? 'due' : 'part');
@@ -612,7 +865,7 @@ function invoiceHTML(inv) {
           <div class="small">${esc(s.address)}</div>
           <div class="small">${s.phone ? 'Phone: ' + esc(s.phone) : ''}${s.gstin ? ' &nbsp; GSTIN: ' + esc(s.gstin) : ''}</div></div>
       </div>
-      <div class="inv-meta"><div class="tt">Invoice</div><div class="no">${esc(inv.no)}</div><div class="dt">${esc(inv.date)}</div><span class="inv-st ${stc}">${st}</span></div>
+      <div class="inv-meta"><div class="tt">${title || 'Invoice'}</div><div class="no">${esc(inv.no)}</div><div class="dt">${esc(inv.date)}</div>${title ? '' : `<span class="inv-st ${stc}">${st}</span>`}</div>
     </div>
     <div class="inv-body">
       <div class="inv-bill"><div class="lb">Bill to</div><div class="nm">${esc(c.name)}</div>
@@ -623,13 +876,14 @@ function invoiceHTML(inv) {
         <thead><tr><th>#</th><th>Item</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Tax</th><th class="num">Amount</th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div>
-      <div class="inv-tot">
+      <div class="inv-sum">${payBlock()}<div class="inv-tot">
         <div><span>Subtotal</span><span>${money(t.sub)}</span></div>
         ${t.disc ? `<div class="disc"><span>Discount (${inv.discount}%)</span><span>− ${money(t.disc)}</span></div>` : ''}
         <div><span>Tax</span><span>${money(t.tax)}</span></div>
+        ${t.round ? `<div><span>Round off</span><span>${t.round < 0 ? '− ' : '+ '}${money(Math.abs(t.round))}</span></div>` : ''}
         <div class="grand"><span>Total</span><span>${money(t.total)}</span></div>
-        ${paidOf(inv) ? `<div class="paid"><span>Paid</span><span>${money(paidOf(inv))}</span></div><div class="bal"><span>Balance due</span><span>${money(dueOf(inv))}</span></div>` : ''}
-      </div>
+        ${!title && paidOf(inv) ? `<div class="paid"><span>Received${(inv.payments || []).length === 1 && inv.payments[0].type ? ' (' + esc(inv.payments[0].type) + ')' : ''}</span><span>${money(paidOf(inv))}</span></div><div class="bal"><span>Balance due</span><span>${money(dueOf(inv))}</span></div>` : ''}
+      </div></div>
       <div class="inv-ft">${esc(inv.note || db.settings.note)}</div>
     </div>`;
 }
@@ -644,11 +898,11 @@ function showInvoice(id) {
   const inv = db.invoices.find(x => x.id === id);
   if (!inv) return;
   printName = String(inv.no).replace(/[^\w.\- ]+/g, '-');
-  $('#sheet').innerHTML = invoiceHTML(inv);
-  $('#viewer').hidden = false;
+  curDoc = {d: inv}; $('#sheet').innerHTML = invoiceHTML(inv);
+  $('#viewer').hidden = false; applyDesign(true);
 }
 let oldUrl = null;
-function closeViewer() { $('#viewer').hidden = true; if (oldUrl) { URL.revokeObjectURL(oldUrl); oldUrl = null; } }
+function closeViewer() { $('#viewer').hidden = true; $('#dsn').hidden = true; if (oldUrl) { URL.revokeObjectURL(oldUrl); oldUrl = null; } }
 function toBlob(dataUrl) {
   const i = dataUrl.indexOf(','), mime = dataUrl.slice(5, dataUrl.indexOf(';'));
   const bin = atob(dataUrl.slice(i + 1)), u = new Uint8Array(bin.length);
@@ -781,7 +1035,7 @@ function renderSettings() {
   const s = db.settings, b = db.businesses.find(x => x.id === editB) || {name: '', phone: '', gstin: '', address: ''};
   $('#main').innerHTML = `
     <h2>Settings</h2>
-    ${acct.role === 'admin' ? `    <div class="card"><h3>Business details (shown on invoices)</h3>
+    ${(acct.role === 'admin' || can('business')) ? `    <div class="card"><h3>Business details (shown on invoices)</h3>
       <p style="margin-top:0;color:var(--muted)">Add every business or GST number you bill from. You pick one on each invoice.</p>
       <h3 style="font-size:14px">${editB ? 'Edit business' : 'Add business'}</h3>
       <div class="grid">
@@ -802,9 +1056,9 @@ function renderSettings() {
         <tbody>${db.businesses.map(x => `<tr>
           <td>${x.logo ? `<img class="logo-thumb" src="${x.logo}" alt="">` : ''}</td>
           <td>${esc(x.name)}${x.id === db.defaultBiz ? '<span class="badge">Default</span>' : ''}</td><td>${esc(x.gstin)}</td><td>${esc(x.phone)}</td>
-          <td><div class="row-actions"><button class="ghost" onclick="editB = '${x.id}'; tmpLogo = db.businesses.find(y => y.id === '${x.id}').logo || ''; renderSettings(); window.scrollTo(0, 0)">Edit</button>
+          <td><div class="row-actions">${acct.role === 'user' && x.id === 'co-' + acct.id ? '<span class="small" style="color:var(--muted)">Set by Admin</span>' : `<button class="ghost" onclick="editB = '${x.id}'; tmpLogo = db.businesses.find(y => y.id === '${x.id}').logo || ''; renderSettings(); window.scrollTo(0, 0)">Edit</button>`}
           ${x.id !== db.defaultBiz ? `<button class="ghost" onclick="db.defaultBiz = '${x.id}'; save(); go('settings')">Make default</button>` : ''}
-          <button class="ghost danger" onclick="delBiz('${x.id}')">Delete</button></div></td></tr>`).join('')}</tbody></table></div>
+          ${acct.role === 'user' && x.id === 'co-' + acct.id ? '' : `<button class="ghost danger" onclick="delBiz('${x.id}')">Delete</button>`}</div></td></tr>`).join('')}</tbody></table></div>
     </div>` : `<div class="card"><h3>Company</h3><div style="font-weight:600">${esc(defBiz().name)}</div><div class="small" style="color:var(--muted)">${esc(defBiz().gstin ? 'GSTIN: ' + defBiz().gstin : '')}</div><div class="warn" style="margin:10px 0 0">Company details are set by the Admin and cannot be changed here.</div></div>`}
     <div class="card"><h3>Invoice numbering</h3>
       <div class="grid">
@@ -1650,7 +1904,7 @@ function delOld(id) {
 
 /* ---------- create account (Admin only) ---------- */
 const USERS_KEY = 'billing-users-v1'; // old browser-only accounts (used for moving data)
-const PERMS = [['dash', 'Dashboard'], ['new', 'Create new invoice'], ['invoices', 'View invoices'], ['old', 'Old invoices (upload)'], ['products', 'Products'], ['customers', 'Customers'], ['settings', 'Settings (numbering, backup)'], ['payment', 'Record payments'], ['inv', 'Inventory (items, stock entry, upload)'], ['delete', 'Delete single items only (bill, product, customer, stock item, IMEI)']];
+const PERMS = [['business', 'Business details (add more shops)'], ['dash', 'Dashboard'], ['new', 'Create new invoice'], ['invoices', 'View invoices'], ['old', 'Old invoices (upload)'], ['products', 'Products'], ['customers', 'Customers'], ['settings', 'Settings (numbering, backup)'], ['payment', 'Record payments'], ['inv', 'Inventory (items, stock entry, upload)'], ['delete', 'Delete single items only (bill, product, customer, stock item, IMEI)']];
 const DEF_PERMS = ['dash', 'new', 'invoices', 'products', 'inv', 'customers', 'payment'];
 let usersCache = [], usersLoaded = false, billCounts = {}, editU = null;
 async function loadUsers() {
